@@ -13,7 +13,7 @@ H = 360
 mapW=200
 mapH=200
 
-camera_height=0.21 #test
+camera_height=0.218
 
 detector = apriltag.Detector()
 
@@ -36,23 +36,23 @@ device_product_line = str(device.get_info(rs.camera_info.product_line))
 
 found_rgb = False
 for s in device.sensors:
-	print(s)
+	#print(s)
 	if s.get_info(rs.camera_info.name) == 'RGB Camera':
 		found_rgb = True
 		break
 if not found_rgb:
-	print("The demo requires Depth camera with Color sensor")
+	#print("The demo requires Depth camera with Color sensor")
 	exit(0)
 
 profile = pipelineD435.start(configD435)
 
-stream_profile_depth = profile.get_stream(rs.stream.color)
-intrinsics = stream_profile_depth.as_video_stream_profile().get_intrinsics()
+stream_profile = profile.get_stream(rs.stream.color)
+intrinsics = stream_profile.as_video_stream_profile().get_intrinsics()
 
 align_to = rs.stream.color
 align = rs.align(align_to)
 
-bla = True
+show_height_map = False #otherwise it will show real colors
 
 def pixel_to_world(x,y):
 	dist = aligned_depth_frame.get_distance(x, y)
@@ -73,10 +73,10 @@ while True:
 		x = -data.rotation.z
 		y = data.rotation.x
 		z = -data.rotation.y
-		pitch =  -m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi;
+		pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #correction that normally shouldn't be necessary...
 		roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi;
 		yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi;
-
+		#print(pitch)
 	else:
 		pitch = 0
 		roll = 0
@@ -86,6 +86,7 @@ while True:
 
 	aligned_frames = align.process(framesD435)
 
+	#aligned_depth_frame = framesD435.get_depth_frame() #for testing without aligned frames
 	aligned_depth_frame = aligned_frames.get_depth_frame()
 	color_frame = aligned_frames.get_color_frame()
  
@@ -95,11 +96,9 @@ while True:
 	gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
 	map = np.zeros((mapW,mapH,3), np.uint8)
-	#bla = not bla
-	stepsize = 2
+	#show_height_map = not show_height_map # switch between height map and real colors
 	for x in range(0,W,60):
 		for y in range (0,H,10):
-			stepsize=stepsize + m.pow((10/H),4)
 			cx, cy, cz = pixel_to_world(x,y)
 			if cy > 0.4:					#ignore obstacles above car height
 				continue
@@ -107,7 +106,7 @@ while True:
 			### map drawing 2x2m
 			mx = int(cx * 100 + mapW / 2)
 			my = int(mapH - cz * 100)
-			if bla:
+			if show_height_map:
 				c = int(128 + cy * 128 * 5)
 				if c < 0 or c > 255:
 					continue
@@ -137,7 +136,7 @@ while True:
 	cv2.namedWindow('map', cv2.WINDOW_NORMAL)
 	#cv2.setWindowProperty('map', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 	cv2.imshow('map', map)
-	print(1/(time.time()-start_time))
+	print(1/(time.time()-start_time), "fps")
 	key = cv2.waitKey(1)
 	if key & 0xFF == ord('q') or key == 27:
 		cv2.destroyAllWindows()
