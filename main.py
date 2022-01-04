@@ -52,7 +52,7 @@ intrinsics = stream_profile.as_video_stream_profile().get_intrinsics()
 align_to = rs.stream.color
 align = rs.align(align_to)
 
-show_height_map = False #otherwise it will show real colors
+show_height_map = True #otherwise it will show real colors
 
 def pixel_to_world(x,y):
 	dist = aligned_depth_frame.get_distance(x, y)
