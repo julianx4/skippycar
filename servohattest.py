@@ -19,4 +19,4 @@ def driving_speed(speed):
         speed = 100
     if speed < -72:
         speed = -72
-    kit.servo[steering_pin].angle = speed * speed_cap / 100 + 72
+    kit.servo[esc_pin].angle = speed * speed_cap / 100 + 72
