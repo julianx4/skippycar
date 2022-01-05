@@ -10,14 +10,14 @@ from scipy.spatial.transform import Rotation as R
 # world coordinate system
 # up +Y
 # /\ 
-# |     / forward -Z
+# |     / forward +Z
 # |    /
 # |   /
 # |  /
 # | /
 # |/______> right +X
     
-	
+
 W = 640
 H = 360
 
@@ -76,9 +76,9 @@ def pixel_to_car_coord(x, y):
 def car_coord_to_world_coord(x, y, z):
 	c=np.array([x,y,z])
 	cx,cy,cz=np.matmul(rotation_yaw,c)
-	cx = cam_in_world_coord_x - cx
-	cy = cam_in_world_coord_y - cy
-	cz = cam_in_world_coord_z - cz
+	cx = cam_in_world_coord_x + cx
+	cy = cam_in_world_coord_y + cy
+	cz = cam_in_world_coord_z + cz
 	return cx, cy, cz
 
 while True:
@@ -94,7 +94,7 @@ while True:
 		z = -data.rotation.y
 		cam_in_world_coord_x = data.translation.x
 		cam_in_world_coord_y = data.translation.y
-		cam_in_world_coord_z = data.translation.z
+		cam_in_world_coord_z = -data.translation.z
 
 		pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #1.7 degree misalignment between T265 tracking camera and D435 depth camera
 		roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi;
@@ -114,8 +114,8 @@ while True:
 	rotation_yaw = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
 	world_coord_rotation = np.matmul(rotation, rotation_yaw)
 
-	wx,wy,wz = car_coord_to_world_coord(0,0,0)
-	print(round(wx,2), round(wy,2), round(wz,2))
+	#wx,wy,wz = car_coord_to_world_coord(0,0,0)
+	#print(round(wx,2), round(wy,2), round(wz,2))
 
 	aligned_frames = align.process(framesD435)
 	aligned_depth_frame = aligned_frames.get_depth_frame()
@@ -152,8 +152,8 @@ while True:
 		x,y = result.center
 		cx, cy, cz = pixel_to_car_coord(int(x),int(y))
 
-		#wx, wy, wz = car_coord_to_world_coord(cx, cy, cz)
-		#print(round(wx,2), round(wy,2), round(wz,2))
+		wx, wy, wz = car_coord_to_world_coord(cx, cy, cz)
+		print(round(wx,2), round(wy,2), round(wz,2))
 
 		### draw target in map
 		mx = int(cx * 100 + mapW / 2)
