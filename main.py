@@ -7,6 +7,17 @@ import apriltag
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 
+# world coordinate system
+# up +Y
+# /\ 
+# |     / forward -Z
+# |    /
+# |   /
+# |  /
+# | /
+# |/______> right +X
+    
+	
 W = 640
 H = 360
 
@@ -54,12 +65,20 @@ align = rs.align(align_to)
 
 show_height_map = True #otherwise it will show real colors
 
-def pixel_to_world(x,y):
+def pixel_to_car_coord(x, y):
 	dist = aligned_depth_frame.get_distance(x, y)
 	cx,cy,cz = rs.rs2_deproject_pixel_to_point(intrinsics, [x, y], dist)
 	c=np.array([cx,cy,cz])
 	cx,cy,cz=np.matmul(rotation,c)
 	cy = camera_height - cy
+	return cx, cy, cz
+
+def car_coord_to_world_coord(x, y, z):
+	c=np.array([x,y,z])
+	cx,cy,cz=np.matmul(rotation_yaw,c)
+	cx = cam_in_world_coord_x - cx
+	cy = cam_in_world_coord_y - cy
+	cz = cam_in_world_coord_z - cz
 	return cx, cy, cz
 
 while True:
@@ -73,20 +92,32 @@ while True:
 		x = -data.rotation.z
 		y = data.rotation.x
 		z = -data.rotation.y
-		pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #correction that normally shouldn't be necessary...
+		cam_in_world_coord_x = data.translation.x
+		cam_in_world_coord_y = data.translation.y
+		cam_in_world_coord_z = data.translation.z
+
+		pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #1.7 degree misalignment between T265 tracking camera and D435 depth camera
 		roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi;
 		yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi;
 		#print(pitch)
 	else:
 		pitch = 0
 		roll = 0
+		yaw = 0
+		cam_in_world_coord_x = 0
+		cam_in_world_coord_y = 0
+		cam_in_world_coord_z = 0
 	rotation_roll = R.from_rotvec(roll * np.array([0, 0, 1]), degrees=True).as_matrix()
 	rotation_pitch = R.from_rotvec(pitch * np.array([1, 0, 0]), degrees=True).as_matrix()
 	rotation=np.matmul(rotation_roll, rotation_pitch)
 
-	aligned_frames = align.process(framesD435)
+	rotation_yaw = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
+	world_coord_rotation = np.matmul(rotation, rotation_yaw)
 
-	#aligned_depth_frame = framesD435.get_depth_frame() #for testing without aligned frames
+	wx,wy,wz = car_coord_to_world_coord(0,0,0)
+	print(round(wx,2), round(wy,2), round(wz,2))
+
+	aligned_frames = align.process(framesD435)
 	aligned_depth_frame = aligned_frames.get_depth_frame()
 	color_frame = aligned_frames.get_color_frame()
  
@@ -97,9 +128,9 @@ while True:
 
 	map = np.zeros((mapW,mapH,3), np.uint8)
 	#show_height_map = not show_height_map # switch between height map and real colors
-	for x in range(0,W,60):
-		for y in range (0,H,10):
-			cx, cy, cz = pixel_to_world(x,y)
+	for x in range(0, W, 60):
+		for y in range (0, H, 10):
+			cx, cy, cz = pixel_to_car_coord(x,y)
 			if cy > 0.4:					#ignore obstacles above car height
 				continue
 
@@ -119,15 +150,17 @@ while True:
 	
 	for result in detector.detect(gray):
 		x,y = result.center
-		cx, cy, cz = pixel_to_world(int(x),int(y))
-		
+		cx, cy, cz = pixel_to_car_coord(int(x),int(y))
+
+		#wx, wy, wz = car_coord_to_world_coord(cx, cy, cz)
+		#print(round(wx,2), round(wy,2), round(wz,2))
+
 		### draw target in map
 		mx = int(cx * 100 + mapW / 2)
 		my = int(mapH - cz * 100)	
 		cv2.circle(map, (mx,my), 3, (0,0,255), thickness=-1, lineType=8, shift=0)
 		cv2.line(map, (int(mapW/2), mapH), (mx, my), (0, 0, 255), thickness=3)
 	
-	quadrant_number=0
 	for quadrant_line in range(0,mapW,int(mapW/10)):
 		cv2.line(map, (quadrant_line, 0), (quadrant_line, mapW), (255, 0, 0), thickness=1)
 		cv2.line(map, (0, quadrant_line), (mapH,quadrant_line), (255, 0, 0), thickness=1)
@@ -136,7 +169,7 @@ while True:
 	cv2.namedWindow('map', cv2.WINDOW_NORMAL)
 	#cv2.setWindowProperty('map', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 	cv2.imshow('map', map)
-	print(1/(time.time()-start_time), "fps")
+	#print(1/(time.time()-start_time), "fps")
 	key = cv2.waitKey(1)
 	if key & 0xFF == ord('q') or key == 27:
 		cv2.destroyAllWindows()
