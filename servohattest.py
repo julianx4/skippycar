@@ -2,16 +2,21 @@ from adafruit_servokit import ServoKit
 kit = ServoKit(channels=16)
 kit.servo[0].set_pulse_width_range(1000, 2000)
 
-speed_cap = 50 #percentage of max speed
+speed_cap = 12.5 #percentage of max speed
+#steering angle 30 - 150
 
 throttle_stop = 72
 throttle_full_forward = 180
 throttle_full_reverse = 0
 
 steering_pin = 15
-esc_pin = 0
+esc_pin = 14
 
 def steering_angle(angle):
+    if angle > 150:
+        angle = 150
+    if angle < 30:
+        angle = 30
     kit.servo[steering_pin].angle = angle
 
 def driving_speed(speed):

@@ -6,11 +6,13 @@ import pyrealsense2 as rs
 import apriltag
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
+from adafruit_servokit import ServoKit
+
 
 # world coordinate system
 # up +Y
-# /\ 
-# |     / forward +Z
+# /\    _
+# |     /| forward +Z
 # |    /
 # |   /
 # |  /
@@ -18,13 +20,25 @@ from scipy.spatial.transform import Rotation as R
 # |/______> right +X
     
 
-W = 640
-H = 360
+realsenseW = 640
+realsenseH = 360
 
 mapW=200
 mapH=200
 
-camera_height=0.218
+camera_height=0.218 #mounting height of the depth camera vs. ground
+
+kit = ServoKit(channels=16)
+
+speed_cap = 12.5 #percentage of max speed
+#steering angle 30 - 150
+
+throttle_stop = 72
+throttle_full_forward = 180
+throttle_full_reverse = 0
+
+steering_pin = 15
+esc_pin = 14
 
 detector = apriltag.Detector()
 
@@ -37,8 +51,8 @@ pipelineT265.start(configT265)
 pipelineD435 = rs.pipeline()
 configD435 = rs.config()
 configD435.enable_device('143322074867') 
-configD435.enable_stream(rs.stream.depth, W, H, rs.format.z16, 30)
-configD435.enable_stream(rs.stream.color, W, H, rs.format.bgr8, 30)
+configD435.enable_stream(rs.stream.depth, realsenseW, realsenseH, rs.format.z16, 30)
+configD435.enable_stream(rs.stream.color, realsenseW, realsenseH, rs.format.bgr8, 30)
 
 pipeline_wrapper = rs.pipeline_wrapper(pipelineD435)
 pipeline_profile = configD435.resolve(pipeline_wrapper)
@@ -80,6 +94,20 @@ def car_coord_to_world_coord(x, y, z):
 	cy = cam_in_world_coord_y + cy
 	cz = cam_in_world_coord_z + cz
 	return cx, cy, cz
+
+def steering_angle(angle):
+    if angle > 150:
+        angle = 150
+    if angle < 30:
+        angle = 30
+    kit.servo[steering_pin].angle = angle
+
+def driving_speed(speed):
+    if speed > 100:
+        speed = 100
+    if speed < -72:
+        speed = -72
+    kit.servo[esc_pin].angle = speed * speed_cap / 100 + 72
 
 while True:
 	start_time=time.time()
@@ -128,8 +156,8 @@ while True:
 
 	map = np.zeros((mapW,mapH,3), np.uint8)
 	#show_height_map = not show_height_map # switch between height map and real colors
-	for x in range(0, W, 60):
-		for y in range (0, H, 10):
+	for x in range(0, realsenseW, 60):
+		for y in range (0, realsenseH, 10):
 			cx, cy, cz = pixel_to_car_coord(x,y)
 			if cy > 0.4:					#ignore obstacles above car height
 				continue
