@@ -20,4 +20,3 @@ while True:
         voltages_bytes = struct.pack('%sf' %2,* [cell1, cell2])
         print(struct.unpack('%sf' %2,voltages_bytes))
         r.setex('voltages', 2, voltages_bytes)
-        print(read1/32768*6.144)

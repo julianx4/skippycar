@@ -10,7 +10,7 @@ r = redis.Redis(host='localhost', port=6379, db=0)
 car_zero_coords = np.array([0,0,0])
 car_coords = np.array([0,0,0])
 
-target_coords = np.array([0,0,2])
+distance = 0
 
 yaw_zero = 0
 yaw = 0
@@ -39,17 +39,15 @@ while True:
     else:
         yaw = float(received_yaw)# + yaw_zero
 
-    
-    angle, distance = angle_and_distance_to_target(car_coords,target_coords,yaw)
-    r.psetex('angle', 800, angle)
-    print(angle)        
     received_target_coords = r.get('target_coords')
     if received_target_coords is not None:
         target_coords = np.array(struct.unpack('%sf' %3, received_target_coords))# + car_zero_coords   
+        angle, distance = angle_and_distance_to_target(car_coords,target_coords,yaw)
+        r.psetex('angle', 800, angle)
+        print(angle)        
+    
     if distance > 1:
         r.psetex('speed', 800, 25)
-
-    
 
     time.sleep(0.1)
 
