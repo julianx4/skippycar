@@ -27,7 +27,7 @@ realsenseH = 360
 mapW=200
 mapH=200
 
-camera_height=0.218 #mounting height of the depth camera vs. ground
+camera_height=0.22 #mounting height of the depth camera vs. ground
 
 detector = apriltag.Detector()
 
@@ -156,12 +156,11 @@ while True:
         x,y = result.center
         cx, cy, cz = pixel_to_car_coord(int(x),int(y))
 
-        wx, wy, wz = car_coord_to_world_coord(cx, cy, cz)
-        print(round(wx,2), round(wy,2), round(wz,2))
+        targetx, targety, targetz = car_coord_to_world_coord(cx, cy, cz)
 
         ### send target coordinates to redis server
-        target_coords_bytes = struct.pack('%sf' %3,* [wx, wy, wz])
-        r.set('target_coords',target_coords_bytes)
+        target_coords_bytes = struct.pack('%sf' %3,* [targetx, targety, targetz])
+        r.psetex('target_coords', 1000, target_coords_bytes) #target coordinates expire after xx milliseconds
         
         ### draw target in map
         mx = int(cx * 100 + mapW / 2)
@@ -177,6 +176,12 @@ while True:
     cv2.namedWindow('map', cv2.WINDOW_NORMAL)
     cv2.imshow('map', map)
     #print(1/(time.time()-start_time), "fps")
+
+    carx, cary, carz = car_coord_to_world_coord(0, 0, 0)
+    ### send target coordinates to redis server
+    car_coords_bytes = struct.pack('%sf' %3,* [carx, cary, carz])
+    r.psetex('car_coords', 1000, car_coords_bytes) #car coordinates expire after xx milliseconds
+    r.psetex('yaw', 1000, yaw) #yaw expire after xx milliseconds
 
     key = cv2.waitKey(1)
     if key & 0xFF == ord('q') or key == 27:
