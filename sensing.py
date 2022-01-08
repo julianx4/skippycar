@@ -27,7 +27,7 @@ realsenseH = 360
 mapW=200
 mapH=200
 
-camera_height=0.22 #mounting height of the depth camera vs. ground
+camera_height=0.25 #mounting height of the depth camera vs. ground
 
 detector = apriltag.Detector()
 
@@ -92,6 +92,8 @@ def car_coord_to_world_coord(x, y, z):
     cz = car_in_world_coord_z + cz
     return cx, cy, cz
 
+
+
 while True:
     start_time=time.time()
     framesT265 = pipelineT265.wait_for_frames()
@@ -135,7 +137,8 @@ while True:
     color_image = np.asanyarray(color_frame.get_data())
     gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
-    map = np.zeros((mapW,mapH,3), np.uint8)
+    #map = np.zeros((mapW,mapH,1), np.uint8)
+    map = np.full((mapW,mapH,1),100, np.uint8)
     #show_height_map = not show_height_map # switch between height map and real colors
     for x in range(0, realsenseW, 60):
         for y in range (0, realsenseH, 10):
@@ -143,14 +146,16 @@ while True:
             if cy > 0.4:					#ignore obstacles above car height
                 continue
 
-            ### map drawing 2x2m
-            mx = int(cx * 100 + mapW / 2)
+            ### map 2x2m
+            mx = int(cx * 100 + (mapW / 2) - 3) #correction of camera position
             my = int(mapH - cz * 100)
             if show_height_map:
-                c = int(128 + cy * 128 * 5)
+                #c = int(128 + cy * 128 * 5)
+                c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
                 if c < 0 or c > 255:
                     continue
-                cv2.circle(map, (mx,my), 0, (c,c,c), thickness=-1, lineType=8, shift=0)
+                cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
+                #cv2.rectangle(map,(mx-3,my-3),(mx+3,my+3),(c),-1)
 				
             else:
                 r,g,b = color_image[y, x]
@@ -165,10 +170,11 @@ while True:
         r.psetex('target_car_coords', 10000, target_coords_bytes) #target coordinates expire after xx milliseconds
         
         ### draw target in map
-        mx = int(cx * 100 + mapW / 2)
-        my = int(mapH - cz * 100)	
-        cv2.circle(map, (mx,my), 1, (0,0,255), thickness=-1, lineType=8, shift=0)
-        cv2.line(map, (int(mapW/2), mapH), (mx, my), (0, 0, 255), thickness=3)
+        #mx = int(cx * 100 + mapW / 2)
+        #my = int(mapH - cz * 100)	
+        #cv2.circle(map, (mx,my), 1, (0,0,255), thickness=-1, lineType=8, shift=0)
+        #cv2.line(map, (int(mapW/2), mapH), (mx, my), (0, 0, 255), thickness=3)
+
 
     map_to_redis(r,map,'map')
 
@@ -179,3 +185,12 @@ while True:
     r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
 
     print(time.time() - start_time)
+
+    
+    #cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+    #cv2.imshow('map', map)
+
+    key = cv2.waitKey(1)
+    if key & 0xFF == ord('q') or key == 27:
+        cv2.destroyAllWindows()
+        break

@@ -27,6 +27,48 @@ car_in_world_coord_z = 0
 rotation_yaw_car_to_world = R.from_rotvec(0 * np.array([0, 1, 0]), degrees=True).as_matrix()
 rotation_yaw_world_to_car = R.from_rotvec(-0 * np.array([0, 1, 0]), degrees=True).as_matrix()
 
+mapW=200
+mapH=200
+
+def redis_to_map(redis,name):
+    encoded = redis.get(name)
+    if encoded is None:
+        return np.zeros((mapW, mapH, 3), np.uint8)
+    else:
+        h, w = struct.unpack('>II', encoded[:8])
+        array = np.frombuffer(encoded, dtype=np.uint8, offset=8).reshape(h, w, 1)
+        array = cv2.cvtColor(array,cv2.COLOR_GRAY2RGB)
+        return array
+
+def obstacle_in_way():
+    starttime=time.time()
+    map=redis_to_map(r,"map")
+    quadrant = []
+    #target_coords_x = int(target_car_coords[0] * 100 + mapW/2)
+    #target_coords_y = int(mapH - target_car_coords[2] * 100)
+        
+    for x in range(0,2):
+        crop = map[170:190,x*20+80:x*20+100]
+        quadrant.append(crop.max()-100)
+
+    for x in range(0,4):
+        crop = map[150:170,x*20+60:x*20+80]
+        quadrant.append(crop.max()-100)
+
+    for x in range(0,6):
+        crop = map[130:150,x*20+40:x*20+60]
+        quadrant.append(crop.max()-100)
+
+    for x in range(0,8):
+        crop = map[110:130,x*20+20:x*20+40]
+        quadrant.append(crop.max()-100)
+
+    if quadrant[0] < 10 and quadrant[1] < 10:
+        return False
+    else:
+        return True
+    
+
 def car_coord_to_world_coord(x, y, z):
     c=np.array([x,y,z])
     cx,cy,cz=np.matmul(rotation_yaw_car_to_world,c)
@@ -51,8 +93,6 @@ def angle_and_distance_to_target(car_in_world, target_world_coords, car_yaw_to_w
     angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) - car_yaw_to_world
     distance = np.linalg.norm(car2target_vector)
     return angle, distance
-
-should_I_drive = True
 
 while True:
     received_yaw = r.get('yaw')
@@ -79,18 +119,16 @@ while True:
     if received_target_coords is not None:
         target_car_coords = np.array(struct.unpack('%sf' %3, received_target_coords))   
         target_world_coords = car_coord_to_world_coord(target_car_coords[0], target_car_coords[1], target_car_coords[2])
-
-    if should_I_drive is True and target_world_coords is not None:
         angle, distance = angle_and_distance_to_target(car_in_world, target_world_coords, yaw)
-        r.psetex('angle', 800, angle)
-        #print(angle)       
+
         if distance > 1:
-            r.psetex('speed', 800, 25)
+            if not obstacle_in_way():
+                r.psetex('angle', 800, angle)
+                r.psetex('speed', 800, 25)
+                print("speed signal sent")
+            else:
+                print("obstacle, stopping")
 
-    if target_world_coords is not None:
-        print(target_world_coords)
-        angle, distance = angle_and_distance_to_target(car_in_world, target_world_coords, yaw)
-        print(angle, distance)
 
     time.sleep(0.2)
 
