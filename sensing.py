@@ -140,8 +140,8 @@ while True:
     #map = np.zeros((mapW,mapH,1), np.uint8)
     map = np.full((mapW,mapH,1),100, np.uint8)
     #show_height_map = not show_height_map # switch between height map and real colors
-    for x in range(0, realsenseW, 60):
-        for y in range (0, realsenseH, 10):
+    for x in range(0, realsenseW, 70):
+        for y in range (0, realsenseH, 15):
             cx, cy, cz = pixel_to_car_coord(x, y)
             if cy > 0.4:					#ignore obstacles above car height
                 continue
@@ -167,7 +167,7 @@ while True:
 
         ### send target coordinates to redis server
         target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
-        r.psetex('target_car_coords', 10000, target_coords_bytes) #target coordinates expire after xx milliseconds
+        r.psetex('target_car_coords', 800, target_coords_bytes) #target coordinates expire after xx milliseconds
         
         ### draw target in map
         #mx = int(cx * 100 + mapW / 2)
@@ -190,7 +190,7 @@ while True:
     #cv2.namedWindow('map', cv2.WINDOW_NORMAL)
     #cv2.imshow('map', map)
 
-    key = cv2.waitKey(1)
-    if key & 0xFF == ord('q') or key == 27:
-        cv2.destroyAllWindows()
-        break
+    #key = cv2.waitKey(1)
+    #if key & 0xFF == ord('q') or key == 27:
+    #    cv2.destroyAllWindows()
+    #    break

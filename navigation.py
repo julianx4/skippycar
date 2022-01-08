@@ -9,9 +9,6 @@ from scipy.spatial.transform import Rotation as R
 
 r = redis.Redis(host='localhost', port=6379, db=0)
 
-car_zero_coords = np.array([0,0,0])
-car_coords = np.array([0,0,0])
-
 distance = 0
 
 yaw_zero = 0
@@ -19,10 +16,6 @@ yaw = 0
 
 target_world_coords = None
 target_car_coords = None
-
-car_in_world_coord_x = 0
-car_in_world_coord_y = 0
-car_in_world_coord_z = 0
 
 rotation_yaw_car_to_world = R.from_rotvec(0 * np.array([0, 1, 0]), degrees=True).as_matrix()
 rotation_yaw_world_to_car = R.from_rotvec(-0 * np.array([0, 1, 0]), degrees=True).as_matrix()
@@ -62,8 +55,8 @@ def obstacle_in_way():
     for x in range(0,8):
         crop = map[110:130,x*20+20:x*20+40]
         quadrant.append(crop.max()-100)
-
-    if quadrant[0] < 10 and quadrant[1] < 10:
+    max_height = 7
+    if quadrant[0] < max_height and quadrant[1] < max_height and quadrant[3] < max_height and quadrant[4] < max_height and quadrant[8] < 7 and quadrant[9] < 7:
         return False
     else:
         return True
@@ -88,9 +81,11 @@ def world_coord_to_car_coord(x, y, z):
 def angle_and_distance_to_target(car_in_world, target_world_coords, car_yaw_to_world):
     car_vector = np.array([car_in_world[0], car_in_world[2]])
     target_vector = np.array([target_world_coords[0], target_world_coords[2]])
-    car2target_vector = target_vector - car_vector
+    #car2target_vector = target_vector - car_vector
+    car2target_vector = [target_car_coords[0],target_car_coords[2]]
+    print(car2target_vector)
     z_vector=np.array([0,1])
-    angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) - car_yaw_to_world
+    angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) #- car_yaw_to_world
     distance = np.linalg.norm(car2target_vector)
     return angle, distance
 
@@ -121,16 +116,17 @@ while True:
         target_world_coords = car_coord_to_world_coord(target_car_coords[0], target_car_coords[1], target_car_coords[2])
         angle, distance = angle_and_distance_to_target(car_in_world, target_world_coords, yaw)
 
-        if distance > 1:
+        if distance > 0.8:
             if not obstacle_in_way():
-                r.psetex('angle', 800, angle)
-                r.psetex('speed', 800, 25)
+                print(angle)
+                r.psetex('angle', 800, angle*1.2)
+                r.psetex('speed', 800, 30)
                 print("speed signal sent")
             else:
                 print("obstacle, stopping")
 
+    time.sleep(0.01) # ???
 
-    time.sleep(0.2)
 
 
 
