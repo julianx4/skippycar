@@ -35,6 +35,20 @@ pipelineT265 = rs.pipeline()
 configT265 = rs.config()
 configT265.enable_device('908412110993') 
 configT265.enable_stream(rs.stream.pose)
+device = configT265.resolve(pipelineT265).get_device()
+pose_sensor = device.first_pose_sensor()
+pose_sensor.set_option(rs.option.enable_map_preservation, 1)
+pose_sensor.set_option(rs.option.enable_relocalization, 1)
+pose_sensor.set_option(rs.option.enable_pose_jumping, 1)
+pose_sensor.set_option(rs.option.enable_mapping, 1)
+
+#slam_map = []
+#with open("localization_map.map", "r") as mapfile:
+#  for line in mapfile:
+#    slam_map.append(int(line.strip()))
+
+#pose_sensor.import_localization_map(slam_map)
+
 pipelineT265.start(configT265)
 
 pipelineD435 = rs.pipeline()
@@ -94,103 +108,112 @@ def car_coord_to_world_coord(x, y, z):
 
 
 
-while True:
-    start_time=time.time()
-    framesT265 = pipelineT265.wait_for_frames()
-    framesD435 = pipelineD435.wait_for_frames()
-    pose = framesT265.get_pose_frame()
-    if pose:
-        data = pose.get_pose_data()
-        w = data.rotation.w
-        x = -data.rotation.z
-        y = data.rotation.x
-        z = -data.rotation.y
-        car_in_world_coord_x = data.translation.x
-        car_in_world_coord_y = data.translation.y
-        car_in_world_coord_z = -data.translation.z
+try:
+    while True:
+        start_time=time.time()
+        framesT265 = pipelineT265.wait_for_frames()
+        framesD435 = pipelineD435.wait_for_frames()
+        pose = framesT265.get_pose_frame()
+        if pose:
+            data = pose.get_pose_data()
+            w = data.rotation.w
+            x = -data.rotation.z
+            y = data.rotation.x
+            z = -data.rotation.y
+            car_in_world_coord_x = data.translation.x
+            car_in_world_coord_y = data.translation.y
+            car_in_world_coord_z = -data.translation.z
 
-        pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #1.7 degree misalignment between T265 tracking camera and D435 depth camera
-        roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi;
-        yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi;
-        #print(pitch)
-    else:
-        pitch = 0
-        roll = 0
-        yaw = 0
-        car_in_world_coord_x = 0
-        car_in_world_coord_y = 0
-        car_in_world_coord_z = 0
+            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #1.7 degree misalignment between T265 tracking camera and D435 depth camera
+            roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi;
+            yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi;
+            #print(pitch)
+        else:
+            pitch = 0
+            roll = 0
+            yaw = 0
+            car_in_world_coord_x = 0
+            car_in_world_coord_y = 0
+            car_in_world_coord_z = 0
 
-    rotation_roll = R.from_rotvec(roll * np.array([0, 0, 1]), degrees=True).as_matrix()
-    rotation_pitch = R.from_rotvec(pitch * np.array([1, 0, 0]), degrees=True).as_matrix()
-    rotation=np.matmul(rotation_roll, rotation_pitch)
+        rotation_roll = R.from_rotvec(roll * np.array([0, 0, 1]), degrees=True).as_matrix()
+        rotation_pitch = R.from_rotvec(pitch * np.array([1, 0, 0]), degrees=True).as_matrix()
+        rotation=np.matmul(rotation_roll, rotation_pitch)
 
-    rotation_yaw = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
-    world_coord_rotation = np.matmul(rotation, rotation_yaw)
+        rotation_yaw = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
+        world_coord_rotation = np.matmul(rotation, rotation_yaw)
 
-    aligned_frames = align.process(framesD435)
-    aligned_depth_frame = aligned_frames.get_depth_frame()
-    color_frame = aligned_frames.get_color_frame()
+        aligned_frames = align.process(framesD435)
+        aligned_depth_frame = aligned_frames.get_depth_frame()
+        color_frame = aligned_frames.get_color_frame()
 
-    if not aligned_depth_frame or not color_frame:
-        continue
-    color_image = np.asanyarray(color_frame.get_data())
-    gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        if not aligned_depth_frame or not color_frame:
+            continue
+        color_image = np.asanyarray(color_frame.get_data())
+        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
-    #map = np.zeros((mapW,mapH,1), np.uint8)
-    map = np.full((mapW,mapH,1),100, np.uint8)
-    #show_height_map = not show_height_map # switch between height map and real colors
-    for x in range(0, realsenseW, 70):
-        for y in range (0, realsenseH, 15):
-            cx, cy, cz = pixel_to_car_coord(x, y)
-            if cy > 0.4:					#ignore obstacles above car height
-                continue
-
-            ### map 2x2m
-            mx = int(cx * 100 + (mapW / 2) - 3) #correction of camera position
-            my = int(mapH - cz * 100)
-            if show_height_map:
-                #c = int(128 + cy * 128 * 5)
-                c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
-                if c < 0 or c > 255:
+        #map = np.zeros((mapW,mapH,1), np.uint8)
+        map = np.full((mapW,mapH,1),100, np.uint8)
+        #show_height_map = not show_height_map # switch between height map and real colors
+        for x in range(0, realsenseW, 70):
+            for y in range (0, realsenseH, 15):
+                cx, cy, cz = pixel_to_car_coord(x, y)
+                if cy > 0.4:					#ignore obstacles above car height
                     continue
-                cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
-                #cv2.rectangle(map,(mx-3,my-3),(mx+3,my+3),(c),-1)
-				
-            else:
-                r,g,b = color_image[y, x]
-                cv2.circle(map, (mx, my), 3, (int(r), int(g), int(b)), thickness=-1, lineType=8, shift=0)
-	
-    for result in detector.detect(gray):
-        x,y = result.center
-        cx, cy, cz = pixel_to_car_coord(int(x),int(y))
 
-        ### send target coordinates to redis server
-        target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
-        r.psetex('target_car_coords', 800, target_coords_bytes) #target coordinates expire after xx milliseconds
+                ### map 2x2m
+                mx = int(cx * 100 + (mapW / 2) - 3) #correction of camera position
+                my = int(mapH - cz * 100)
+                if show_height_map:
+                    #c = int(128 + cy * 128 * 5)
+                    c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
+                    if c < 0 or c > 255:
+                        continue
+                    cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
+                    #cv2.rectangle(map,(mx-3,my-3),(mx+3,my+3),(c),-1)
+                    
+                else:
+                    r,g,b = color_image[y, x]
+                    cv2.circle(map, (mx, my), 3, (int(r), int(g), int(b)), thickness=-1, lineType=8, shift=0)
         
-        ### draw target in map
-        #mx = int(cx * 100 + mapW / 2)
-        #my = int(mapH - cz * 100)	
-        #cv2.circle(map, (mx,my), 1, (0,0,255), thickness=-1, lineType=8, shift=0)
-        #cv2.line(map, (int(mapW/2), mapH), (mx, my), (0, 0, 255), thickness=3)
+        for result in detector.detect(gray):
+            x,y = result.center
+            cx, cy, cz = pixel_to_car_coord(int(x),int(y))
+
+            ### send target coordinates to redis server
+            target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
+            r.psetex('target_car_coords', 800, target_coords_bytes) #target coordinates expire after xx milliseconds
+            
+            ### draw target in map
+            #mx = int(cx * 100 + mapW / 2)
+            #my = int(mapH - cz * 100)	
+            #cv2.circle(map, (mx,my), 1, (0,0,255), thickness=-1, lineType=8, shift=0)
+            #cv2.line(map, (int(mapW/2), mapH), (mx, my), (0, 0, 255), thickness=3)
 
 
-    map_to_redis(r,map,'map')
+        map_to_redis(r,map,'map')
 
-    rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
-    r.psetex('rotation', 1000, rotation_bytes) #yaw expire after xx milliseconds
+        rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
+        r.psetex('rotation', 1000, rotation_bytes) #yaw expire after xx milliseconds
 
-    car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
-    r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
+        car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
+        r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
 
-    print(time.time() - start_time)
+        print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z)
+        print(time.time() - start_time)
 
-    
-    #cv2.namedWindow('map', cv2.WINDOW_NORMAL)
-    #cv2.imshow('map', map)
+        
+        #cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+        #cv2.imshow('map', map)
 
-    #key = cv2.waitKey(1)
-    #if key & 0xFF == ord('q') or key == 27:
-    #    cv2.destroyAllWindows()
-    #    break
+        #key = cv2.waitKey(1)
+        #if key & 0xFF == ord('q') or key == 27:
+        #    cv2.destroyAllWindows()
+        #    break
+except (RuntimeError,KeyboardInterrupt) as e:
+    print("well shit")
+    #slam_map = pose_sensor.export_localization_map()
+    #print(slam_map)
+    #with open ('localization_map.map','w') as mapfile:
+    #    for l in slam_map:
+    #        mapfile.write(str(l)+"\n")

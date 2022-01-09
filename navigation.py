@@ -55,6 +55,9 @@ def obstacle_in_way():
     for x in range(0,8):
         crop = map[110:130,x*20+20:x*20+40]
         quadrant.append(crop.max()-100)
+    crop = map[0:110,60:140]
+    quadrant.append(crop.max()-100)
+    
     max_height = 7
     if quadrant[0] < max_height and quadrant[1] < max_height and quadrant[3] < max_height and quadrant[4] < max_height and quadrant[8] < 7 and quadrant[9] < 7:
         return False

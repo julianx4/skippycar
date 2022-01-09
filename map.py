@@ -49,6 +49,9 @@ while True:
         for x in range(0,8):
             cv2.rectangle(map,(x*20+20,110),(x*20+40,130),(0,255,0),thickness=1)
             cv2.putText(map,str(x+12),(x*20+20+5,125), font, 0.3,(255,255,255),1)
+        
+        cv2.rectangle(map,(60,0),(140,110),(0,255,0),thickness=1)
+        cv2.putText(map,str(20),(95,95), font, 0.3,(255,255,255),1)
 
         cv2.line(map, (87, 0), (87, 200), (255, 0, 0), thickness=1)
         cv2.line(map, (113, 0), (113, 200), (255, 0, 0), thickness=1)

@@ -64,6 +64,8 @@ while driving:
     else:
         steering_angle(float(angle_received))
 
+    time.sleep(0.01) # ???
+
 
 print("stopping")
 driving_speed(0)
