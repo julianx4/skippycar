@@ -4,7 +4,6 @@ import redis
 import struct
 import numpy as np
 import cv2
-from adafruit_servokit import ServoKit
 from scipy.spatial.transform import Rotation as R
 
 r = redis.Redis(host='localhost', port=6379, db=0)
