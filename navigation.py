@@ -58,212 +58,215 @@ def direction_and_speed():
     map=redis_to_map(r,"map")
     path_min = [[],[],[],[],[],[],[]]
     path_max = [[],[],[],[],[],[],[]]
+    
+    crop = map[180:200,80:120]
+    in_front_of_car = crop.max()-100
 
     #path0:
-    crop = map[65:105,170:190]
+    crop = map[170:190,65:105]
     path_min[0].append(crop.min()-100)
     path_max[0].append(crop.max()-100)
 
-    crop = map[45:85,150:170]
+    crop = map[150:170,45:85]
     path_min[0].append(crop.min()-100)
     path_max[0].append(crop.max()-100)
     
-    crop = map[25:45,140:180]
+    crop = map[140:180,25:45]
     path_min[0].append(crop.min()-100)
     path_max[0].append(crop.max()-100)
     
-    crop = map[5:25,140:180]
+    crop = map[140:180,5:25]
     path_min[0].append(crop.min()-100)
     path_max[0].append(crop.max()-100)
     
     #path1:
-    crop = map[75:115,170:190]
+    crop = map[170:190,75:115]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
-    crop = map[65:105,150:170]
+    crop = map[150:170,65:105]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
-    crop = map[55:95,130:150]
+    crop = map[130:150,55:95]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
-    crop = map[45:85,110:130]
+    crop = map[110:130,45:85]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
-    crop = map[25:65,90:110]
+    crop = map[90:110,25:65]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
-    crop = map[5:45,70:90]
+    crop = map[70:90,5:45]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
-    crop = map[0:25,50:70]
+    crop = map[50:70,0:25]
     path_min[1].append(crop.min()-100)
     path_max[1].append(crop.max()-100)
     
     
     #path2:
-    crop = map[75:115,170:190]
+    crop = map[170:190,75:115]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[75:115,150:170]
+    crop = map[150:170,75:115]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[75:115,130:150]
+    crop = map[130:150,75:115]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[65:105,110:130]
+    crop = map[110:130,65:105]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[65:105,90:110]
+    crop = map[90:110,65:105]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[55:95,70:90]
+    crop = map[70:90,55:95]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[45:85,50:70]
+    crop = map[50:70,45:85]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[35:75,30:50]
+    crop = map[30:50,35:75]
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
-    crop = map[15:65,10:30]  
+    crop = map[10:3015:65]  
     path_min[2].append(crop.min()-100)
     path_max[2].append(crop.max()-100)
     
     
     #path3:
-    crop = map[85:115,170:190]
+    crop = map[170:190,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,150:170]
+    crop = map[150:170,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,130:150]
+    crop = map[130:150,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,110:130]
+    crop = map[110:130,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,90:110]
+    crop = map[90:110,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,70:90]
+    crop = map[70:90,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,50:70]
+    crop = map[50:70,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,30:50]
+    crop = map[30:50,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
-    crop = map[85:115,10:30]
+    crop = map[10:30,85:115]
     path_min[3].append(crop.min()-100)
     path_max[3].append(crop.max()-100)
     
     
     #path4:
-    crop = map[85:125,170:190]
+    crop = map[170:190,85:125]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[85:125,150:170]
+    crop = map[150:170,85:125]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[85:125,130:150]
+    crop = map[130:150,85:125]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[95:135,110:130]
+    crop = map[110:130,95:135]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[95:135,90:110]
+    crop = map[90:110,95:135]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[105:145,70:90]
+    crop = map[70:90,105:145]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[115:155,50:70]
+    crop = map[50:70,115:155]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[125:165,30:50]
+    crop = map[30:50,125:165]
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
-    crop = map[135:185,10:30]  
+    crop = map[10:30,135:185]  
     path_min[4].append(crop.min()-100)
     path_max[4].append(crop.max()-100)
     
     
     #path5:
-    crop = map[85:125,170:190]
+    crop = map[170:190,85:125]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
-    crop = map[95:135,150:170]
+    crop = map[150:170,95:135]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
-    crop = map[105:145,130:150]
+    crop = map[130:150,105:145]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
-    crop = map[115:155,110:130]
+    crop = map[110:130,115:155]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
-    crop = map[135:175,90:110]
+    crop = map[90:110,135:175]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
-    crop = map[155:195,70:90]
+    crop = map[70:90,155:195]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
-    crop = map[175:200,50:70]
+    crop = map[50:70,175:200]
     path_min[5].append(crop.min()-100)
     path_max[5].append(crop.max()-100)
     
     
     #path6
-    crop = map[95:145,170:190]
+    crop = map[170:190,95:145]
     path_min[6].append(crop.min()-100)
     path_max[6].append(crop.max()-100)
     
-    crop = map[115:155,150:170]
+    crop = map[150:170,115:155]
     path_min[6].append(crop.min()-100)
     path_max[6].append(crop.max()-100)
     
-    crop = map[155:175,140:180]
+    crop = map[140:180,155:175]
     path_min[6].append(crop.min()-100)
     path_max[6].append(crop.max()-100)
     
-    crop = map[175:195,140:180]
+    crop = map[140:180,175:195]
     path_min[6].append(crop.min()-100)
     path_max[6].append(crop.max()-100)
 
@@ -288,12 +291,14 @@ def direction_and_speed():
             else:
                 path_cost[path] += abs(path_max[path][step] - path_min[path][step])
             
+            #print(path_max[path][step])
             if path_max[path][step+1] - path_max[path][step] > 10:
                 path_cost[path] += 1000
             else:
                 path_cost[path] += abs(path_max[path][step+1] - path_max[path][step])
+    #print(path_max)
     current_path = path_cost.index(min(path_cost))
-    if min(path_cost) > 1000:
+    if min(path_cost) > 1000 or in_front_of_car > 10:
         return
     r.psetex('path', 1000, current_path)
     #print(path_cost)
