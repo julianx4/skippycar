@@ -64,12 +64,10 @@ device_product_line = str(device.get_info(rs.camera_info.product_line))
 
 found_rgb = False
 for s in device.sensors:
-    #print(s)
     if s.get_info(rs.camera_info.name) == 'RGB Camera':
         found_rgb = True
         break
 if not found_rgb:
-    #print("The demo requires Depth camera with Color sensor")
     exit(0)
 
 profile = pipelineD435.start(configD435)
@@ -184,13 +182,6 @@ try:
             target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
             r.psetex('target_car_coords', 800, target_coords_bytes) #target coordinates expire after xx milliseconds
             
-            ### draw target in map
-            #mx = int(cx * 100 + mapW / 2)
-            #my = int(mapH - cz * 100)	
-            #cv2.circle(map, (mx,my), 1, (0,0,255), thickness=-1, lineType=8, shift=0)
-            #cv2.line(map, (int(mapW/2), mapH), (mx, my), (0, 0, 255), thickness=3)
-
-
         map_to_redis(r,map,'map')
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
@@ -203,13 +194,7 @@ try:
         print(time.time() - start_time)
 
         
-        #cv2.namedWindow('map', cv2.WINDOW_NORMAL)
-        #cv2.imshow('map', map)
 
-        #key = cv2.waitKey(1)
-        #if key & 0xFF == ord('q') or key == 27:
-        #    cv2.destroyAllWindows()
-        #    break
 except (RuntimeError,KeyboardInterrupt) as e:
     print("well shit")
     #slam_map = pose_sensor.export_localization_map()
