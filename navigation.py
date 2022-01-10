@@ -33,58 +33,11 @@ def redis_to_map(redis,name):
         array = cv2.cvtColor(array,cv2.COLOR_GRAY2RGB)
         return array
 
-def obstacle_in_way():
-    starttime=time.time()
-    map=redis_to_map(r,"map")
-    quadrant = []
-    #target_coords_x = int(target_car_coords[0] * 100 + mapW/2)
-    #target_coords_y = int(mapH - target_car_coords[2] * 100)
-        
-    for x in range(0,2):
-        crop = map[170:190,x*20+80:x*20+100]
-        quadrant.append(crop.max()-100)
 
-    for x in range(0,4):
-        crop = map[150:170,x*20+60:x*20+80]
-        quadrant.append(crop.max()-100)
-
-    for x in range(0,6):
-        crop = map[130:150,x*20+40:x*20+60]
-        quadrant.append(crop.max()-100)
-
-    for x in range(0,8):
-        crop = map[110:130,x*20+20:x*20+40]
-        quadrant.append(crop.max()-100)
-    crop = map[0:110,60:140]
-    quadrant.append(crop.max()-100)
-    
-    max_height = 7
-    if quadrant[0] < max_height and quadrant[1] < max_height and quadrant[3] < max_height and quadrant[4] < max_height and quadrant[8] < 7 and quadrant[9] < 7:
-        return False
-    else:
-        return True
-    
-
-def car_coord_to_world_coord(x, y, z):
-    c=np.array([x,y,z])
-    cx,cy,cz=np.matmul(rotation_yaw_car_to_world,c)
-    cx = car_in_world_coord_x + cx
-    cy = car_in_world_coord_y + cy
-    cz = car_in_world_coord_z + cz
-    return cx, cy, cz
-
-def world_coord_to_car_coord(x, y, z):
-    c=np.array([x,y,z])
-    cx,cy,cz=np.matmul(rotation_yaw_world_to_car,c)
-    cx = cx - car_in_world_coord_x
-    cy = cy - car_in_world_coord_y
-    cz = cz - car_in_world_coord_z
-    return cx, cy, cz
-
-def angle_and_distance_to_target(car_in_world, target_world_coords, car_yaw_to_world):
-    car_vector = np.array([car_in_world[0], car_in_world[2]])
-    target_vector = np.array([target_world_coords[0], target_world_coords[2]])
-    #car2target_vector = target_vector - car_vector
+def angle_and_distance_to_target():
+    received_target_coords = r.get('target_car_coords')
+    if received_target_coords is not None:
+        target_car_coords = np.array(struct.unpack('%sf' %3, received_target_coords))   
     car2target_vector = [target_car_coords[0],target_car_coords[2]]
     print(car2target_vector)
     z_vector=np.array([0,1])
@@ -92,41 +45,255 @@ def angle_and_distance_to_target(car_in_world, target_world_coords, car_yaw_to_w
     distance = np.linalg.norm(car2target_vector)
     return angle, distance
 
+def direction_and_speed():
+    starttime=time.time()
+    map=redis_to_map(r,"map")
+
+    path0_min = []
+    path0_max = []
+    
+    path1_min = []
+    path1_max = []
+
+    path2_min = []
+    path2_max = []
+
+    path3_min = []
+    path3_max = []
+
+    path4_min = []
+    path4_max = []
+
+    path5_min = []
+    path5_max = []
+
+    path6_min = []
+    path6_max = []
+
+    #path0:
+    crop = map[105:65,170:190]
+    path0_min.append(crop.min()-100)
+    path0_max.append(crop.max()-100)
+
+    crop = map[85:45,150:170]
+    path0_min.append(crop.min()-100)
+    path0_max.append(crop.max()-100)
+    
+    crop = map[45:25,140:180]
+    path0_min.append(crop.min()-100)
+    path0_max.append(crop.max()-100)
+    
+    crop = map[25:5,140:180]
+    path0_min.append(crop.min()-100)
+    path0_max.append(crop.max()-100)
+    
+    #path1:
+    crop = map[115:75,170:190]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    crop = map[105:65,150:170]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    crop = map[95:55,130:150]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    crop = map[85:45,110:130]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    crop = map[65:25,90:110]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    crop = map[45:5,70:90]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    crop = map[25:0,50:70]
+    path1_min.append(crop.min()-100)
+    path1_max.append(crop.max()-100)
+    
+    
+    #path2:
+    crop = map[115:75,170:190]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[115:75,150:170]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[115:75,130:150]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[105:65,110:130]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[105:65,90:110]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[95:55,70:90]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[85:45,50:70]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[75:35,30:50]
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    crop = map[65:15,10:30]  
+    path2_min.append(crop.min()-100)
+    path2_max.append(crop.max()-100)
+    
+    
+    #path3:
+    crop = map[85:115,170:190]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,150:170]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,130:150]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,110:130]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,90:110]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,70:90]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,50:70]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,30:50]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    crop = map[85:115,10:30]
+    path3_min.append(crop.min()-100)
+    path3_max.append(crop.max()-100)
+    
+    
+    #path4:
+    crop = map[85:125,170:190]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[85:125,150:170]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[85:125,130:150]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[95:135,110:130]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[95:135,90:110]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[105:145,70:90]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[115:155,50:70]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[125:165,30:50]
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    crop = map[135:185,10:30]  
+    path4_min.append(crop.min()-100)
+    path4_max.append(crop.max()-100)
+    
+    
+    #path5:
+    crop = map[85:125,170:190]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    crop = map[95:135,150:170]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    crop = map[105:145,130:150]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    crop = map[115:155,110:130]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    crop = map[135:175,90:110]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    crop = map[155:195,70:90]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    crop = map[175:200,50:70]
+    path5_min.append(crop.min()-100)
+    path5_max.append(crop.max()-100)
+    
+    
+    #path6
+    crop = map[95:145,170:190]
+    path6_min.append(crop.min()-100)
+    path6_max.append(crop.max()-100)
+    
+    crop = map[115:155,150:170]
+    path6_min.append(crop.min()-100)
+    path6_max.append(crop.max()-100)
+    
+    crop = map[155:175,140:180]
+    path6_min.append(crop.min()-100)
+    path6_max.append(crop.max()-100)
+    
+    crop = map[175:195,140:180]
+    path6_min.append(crop.min()-100)
+    path6_max.append(crop.max()-100)
+
+    angle, distance = angle_and_distance_to_target()
+
+    #path costs
+    path_angle=[-80, -34, -17, 0, 17, 34, 80]
+
+    path_cost = [0,0,0,0,0,0,0]
+
+    for path in range(len(path_cost)):
+        path_cost[path] += path_angle[path] - angle
+
+    for step in range(0,3):
+        path_cost[0] += path0_min
+
+
 while True:
-    received_yaw = r.get('yaw')
-    if received_yaw is not None:
-        yaw = float(received_yaw)
 
-    received_rotation_bytes = r.get('rotation') 
-    if received_rotation_bytes is not None:
-        rotation = np.array(struct.unpack('%sf' %3, received_rotation_bytes)) 
-        pitch = rotation[0]
-        roll = rotation[1]
-        yaw = rotation[2]
-        rotation_yaw_car_to_world = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
-        rotation_yaw_world_to_car = R.from_rotvec(-yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
-
-    received_car_in_world_bytes = r.get('car_in_world') 
-    if received_car_in_world_bytes is not None:
-        car_in_world = np.array(struct.unpack('%sf' %3, received_car_in_world_bytes))
-        car_in_world_coord_x = car_in_world[0]
-        car_in_world_coord_y = car_in_world[1]
-        car_in_world_coord_z = car_in_world[2]
-
-    received_target_coords = r.get('target_car_coords')
-    if received_target_coords is not None:
-        target_car_coords = np.array(struct.unpack('%sf' %3, received_target_coords))   
-        target_world_coords = car_coord_to_world_coord(target_car_coords[0], target_car_coords[1], target_car_coords[2])
-        angle, distance = angle_and_distance_to_target(car_in_world, target_world_coords, yaw)
-
-        if distance > 0.8:
-            if not obstacle_in_way():
-                print(angle)
-                r.psetex('angle', 800, angle*1.2)
-                r.psetex('speed', 800, 30)
-                print("speed signal sent")
-            else:
-                print("obstacle, stopping")
 
     time.sleep(0.01) # ???
 
