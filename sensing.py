@@ -190,7 +190,7 @@ try:
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
         r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
 
-        print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z)
+        #print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z)
         print(time.time() - start_time)
 
         

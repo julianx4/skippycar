@@ -3,6 +3,7 @@ import redis
 import struct
 import cv2
 import time
+import path_coords as pc
 
 r = redis.Redis(host='localhost', port=6379, db=0)
 
@@ -37,73 +38,17 @@ while True:
     color_path = (0,255,0)
     path_received = r.get('path')
     if path_received is None:
-        path = -1
+        pass    
+    elif int(path_received) == -1:
+        pass
     else:
         path = int(path_received)
-    print(path)
-    if path == 0:
-        cv2.rectangle(map,(65,170),(105,190),color_path, 1)
-        cv2.rectangle(map,(45,150),(85,170),color_path, 1)
-        cv2.rectangle(map,(25,140),(45,180),color_path, 1)
-        cv2.rectangle(map,(5,140),(25,189),color_path, 1)
-
-
-    if path == 1:
-        cv2.rectangle(map,(75,170),(115,190),color_path, 1)
-        cv2.rectangle(map,(65,150),(105,170),color_path, 1)
-        cv2.rectangle(map,(55,130),(95,150),color_path, 1)
-        cv2.rectangle(map,(45,110),(85,130),color_path, 1)
-        cv2.rectangle(map,(25,90),(65,110),color_path, 1)
-        cv2.rectangle(map,(5,70),(45,90),color_path, 1)
-        cv2.rectangle(map,(0,50),(25,70),color_path, 1)
-
-    if path == 2:
-        cv2.rectangle(map,(75,170),(115,190),color_path, 1)
-        cv2.rectangle(map,(75,150),(115,170),color_path, 1)
-        cv2.rectangle(map,(75,130),(115,150),color_path, 1)
-        cv2.rectangle(map,(65,110),(105,130),color_path, 1)
-        cv2.rectangle(map,(65,90),(105,110),color_path, 1)
-        cv2.rectangle(map,(55,70),(95,90),color_path, 1)
-        cv2.rectangle(map,(45,50),(85,70),color_path, 1)
-        cv2.rectangle(map,(35,30),(75,50),color_path, 1)
-        cv2.rectangle(map,(15,10),(65,30),color_path, 1)
-
-    if path == 3:
-        cv2.rectangle(map,(85,170),(115,190),color_path, 1)
-        cv2.rectangle(map,(85,150),(115,170),color_path, 1)
-        cv2.rectangle(map,(85,130),(115,150),color_path, 1)
-        cv2.rectangle(map,(85,110),(115,130),color_path, 1)
-        cv2.rectangle(map,(85,90),(115,110),color_path, 1)
-        cv2.rectangle(map,(85,70),(115,90),color_path, 1)
-        cv2.rectangle(map,(85,50),(115,70),color_path, 1)
-        cv2.rectangle(map,(85,30),(115,50),color_path, 1)
-        cv2.rectangle(map,(85,10),(115,30),color_path, 1)
-
-    if path == 4:
-        cv2.rectangle(map,(85,170),(125,190),color_path, 1)
-        cv2.rectangle(map,(85,150),(125,170),color_path, 1)
-        cv2.rectangle(map,(85,130),(125,150),color_path, 1)
-        cv2.rectangle(map,(95,110),(135,130),color_path, 1)
-        cv2.rectangle(map,(95,90),(135,110),color_path, 1)
-        cv2.rectangle(map,(105,70),(145,90),color_path, 1)
-        cv2.rectangle(map,(115,50),(155,70),color_path, 1)
-        cv2.rectangle(map,(125,30),(165,50),color_path, 1)
-        cv2.rectangle(map,(135,10),(185,30),color_path, 1)
-
-    if path == 5:   
-        cv2.rectangle(map,(85,170),(125,190),color_path, 1)
-        cv2.rectangle(map,(95,150),(135,170),color_path, 1)
-        cv2.rectangle(map,(105,130),(145,150),color_path, 1)
-        cv2.rectangle(map,(115,110),(155,130),color_path, 1)
-        cv2.rectangle(map,(135,90),(175,110),color_path, 1)
-        cv2.rectangle(map,(155,70),(195,90),color_path, 1)
-        cv2.rectangle(map,(175,50),(200,70),color_path, 1)
-
-    if path == 6:
-        cv2.rectangle(map,(95,170),(135,190),color_path, 1)
-        cv2.rectangle(map,(115,150),(155,170),color_path, 1)
-        cv2.rectangle(map,(155,140),(175,180),color_path, 1)
-        cv2.rectangle(map,(175,140),(195,189),color_path, 1)
+        for square in range(7, -1, -1):
+            x0 = pc.paths[path]['coords'][square][0]
+            x1 = pc.paths[path]['coords'][square][1]
+            y0 = pc.paths[path]['coords'][square][2]
+            y1 = pc.paths[path]['coords'][square][3]
+            cv2.rectangle(map,(x0,y0),(x1,y1),color_path, 1)
 
 
     received_target_coords = r.get('target_car_coords')
