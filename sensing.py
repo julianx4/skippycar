@@ -24,8 +24,8 @@ r = redis.Redis(host='localhost', port=6379, db=0)
 realsenseW = 640
 realsenseH = 360
 
-mapW=200
-mapH=200
+mapW = 400
+mapH = 400
 
 camera_height=0.25 #mounting height of the depth camera vs. ground
 
@@ -42,12 +42,6 @@ pose_sensor.set_option(rs.option.enable_relocalization, 1)
 pose_sensor.set_option(rs.option.enable_pose_jumping, 1)
 pose_sensor.set_option(rs.option.enable_mapping, 1)
 
-#slam_map = []
-#with open("localization_map.map", "r") as mapfile:
-#  for line in mapfile:
-#    slam_map.append(int(line.strip()))
-
-#pose_sensor.import_localization_map(slam_map)
 
 pipelineT265.start(configT265)
 
@@ -78,15 +72,25 @@ intrinsics = stream_profile.as_video_stream_profile().get_intrinsics()
 align_to = rs.stream.color
 align = rs.align(align_to)
 
-show_height_map = True #otherwise it will show real colors
 aligned_depth_frame = None
 
 def map_to_redis(redis,array,name):
     h, w = array.shape[:2]
     shape = struct.pack('>II',h,w)
     encoded = shape + array.tobytes()
-    redis.setex(name,3,encoded)
+    #redis.setex(name,3,encoded)
+    redis.set(name,encoded)
     return
+
+def rotate_and_move_map(map, angle, up, right):
+    image_center = tuple(np.array(map.shape[1::-1]) / 2)
+    rot_mat = cv2.getRotationMatrix2D(image_center, angle, 1.0)
+    move_mat = np.float32([
+	[1, 0, right],
+	[0, 1, up]])
+    result_rot = cv2.warpAffine(map, rot_mat, map.shape[1::-1], flags=cv2.INTER_LINEAR, borderValue=(100,100,100))
+    result = cv2.warpAffine(result_rot, move_mat, (result_rot.shape[1], result_rot.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(100,100,100))
+    return result
 
 def pixel_to_car_coord(x, y):
     dist = aligned_depth_frame.get_distance(x, y)
@@ -104,10 +108,15 @@ def car_coord_to_world_coord(x, y, z):
     cz = car_in_world_coord_z + cz
     return cx, cy, cz
 
-
-
+map = np.full((mapW,mapH,1),100, np.uint8)
+yaw = 0
+car_in_world_coord_z = 0
+car_in_world_coord_x = 0
 try:
     while True:
+        car_in_world_coord_x_previous = car_in_world_coord_x
+        car_in_world_coord_z_previous = car_in_world_coord_z
+        yaw_previous = yaw
         start_time=time.time()
         framesT265 = pipelineT265.wait_for_frames()
         framesD435 = pipelineD435.wait_for_frames()
@@ -133,7 +142,7 @@ try:
             car_in_world_coord_x = 0
             car_in_world_coord_y = 0
             car_in_world_coord_z = 0
-
+        
         rotation_roll = R.from_rotvec(roll * np.array([0, 0, 1]), degrees=True).as_matrix()
         rotation_pitch = R.from_rotvec(pitch * np.array([1, 0, 0]), degrees=True).as_matrix()
         rotation=np.matmul(rotation_roll, rotation_pitch)
@@ -150,29 +159,31 @@ try:
         color_image = np.asanyarray(color_frame.get_data())
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
-        #map = np.zeros((mapW,mapH,1), np.uint8)
-        map = np.full((mapW,mapH,1),100, np.uint8)
-        #show_height_map = not show_height_map # switch between height map and real colors
+        
+        yaw_increment = yaw - yaw_previous
+        car_in_world_coord_x_increment = car_in_world_coord_x - car_in_world_coord_x_previous
+        car_in_world_coord_z_increment = car_in_world_coord_z - car_in_world_coord_z_previous
+        map = rotate_and_move_map(map, yaw_increment, car_in_world_coord_z_increment * 100, -car_in_world_coord_x_increment * 100)
+
+        visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+        visible_cone = visible_cone.reshape((-1, 1, 2))
+        #cv2.fillPoly(map, [visible_cone], (100,100,100))
+
         for x in range(0, realsenseW, 70):
             for y in range (0, realsenseH, 15):
                 cx, cy, cz = pixel_to_car_coord(x, y)
                 if cy > 0.4:					#ignore obstacles above car height
                     continue
 
-                ### map 2x2m
-                mx = int(cx * 100 + (mapW / 2) - 3) #correction of camera position
-                my = int(mapH - cz * 100)
-                if show_height_map:
-                    #c = int(128 + cy * 128 * 5)
-                    c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
-                    if c < 0 or c > 255:
-                        continue
-                    cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
-                    #cv2.rectangle(map,(mx-3,my-3),(mx+3,my+3),(c),-1)
-                    
-                else:
-                    r,g,b = color_image[y, x]
-                    cv2.circle(map, (mx, my), 3, (int(r), int(g), int(b)), thickness=-1, lineType=8, shift=0)
+                ### map 4x4m
+                mx = int(cx * 100 + (mapW / 2) - 3) #3cm correction of camera position off center
+                my = int((mapH - cz * 100) - 150) #car is 150cm from bottom
+    
+                c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
+                if c < 0 or c > 255:
+                    continue
+                cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
+            
         
         for result in detector.detect(gray):
             x,y = result.center
@@ -190,8 +201,7 @@ try:
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
         r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
 
-        #print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z)
-        print(time.time() - start_time)
+        #print(time.time() - start_time)
 
         
 

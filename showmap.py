@@ -7,14 +7,14 @@ import path_coords as pc
 
 r = redis.Redis(host='localhost', port=6379, db=0)
 
-mapW=200
-mapH=200
+mapW = 400
+mapH = 400
 
 last_time=0
 
 font = cv2.FONT_HERSHEY_SIMPLEX
 
-map_refresh = 1 # interval between map refresh
+map_refresh = 0.25 # interval between map refresh
 
 map = np.full((mapW,mapH,3),100, np.uint8)
 
@@ -33,7 +33,10 @@ while True:
     last_time = time.time()
     map = redis_to_map(r, "map")
 
-    cv2.rectangle(map,(87,192),(113,200),(255),-1) #draw car
+    cv2.rectangle(map,(187,242),(213,305),(255),-1) #draw car
+    visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+    visible_cone = visible_cone.reshape((-1, 1, 2))
+    cv2.polylines(map, [visible_cone], True, (255,255,255), 1)
 
     color_path = (0,255,0)
     path_received = r.get('path')
@@ -44,10 +47,10 @@ while True:
     else:
         path = int(path_received)
         for square in range(7, -1, -1):
-            x0 = pc.paths[path]['coords'][square][0]
-            x1 = pc.paths[path]['coords'][square][1]
-            y0 = pc.paths[path]['coords'][square][2]
-            y1 = pc.paths[path]['coords'][square][3]
+            x0 = pc.paths[path]['coords'][square][0] + 100
+            x1 = pc.paths[path]['coords'][square][1] + 100
+            y0 = pc.paths[path]['coords'][square][2] + 50
+            y1 = pc.paths[path]['coords'][square][3] + 50
             cv2.rectangle(map,(x0,y0),(x1,y1),color_path, 1)
 
 
@@ -58,6 +61,7 @@ while True:
         my = int(mapH - target_car_coords[2] * 100)	
         cv2.circle(map, (mx,my), 1, (0,0,255), thickness=-1, lineType=8, shift=0)
         cv2.line(map, (int(mapW/2), mapH), (mx, my), (0,0,255), thickness=3)
+
 
     cv2.namedWindow('map', cv2.WINDOW_NORMAL)
     cv2.imshow('map', map)
