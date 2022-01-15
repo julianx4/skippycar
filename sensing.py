@@ -22,7 +22,7 @@ from scipy.spatial.transform import Rotation as R
 r = redis.Redis(host='localhost', port=6379, db=0)
 
 realsenseW = 640
-realsenseH = 360
+realsenseH = 480
 
 mapW = 400
 mapH = 400
@@ -112,17 +112,26 @@ map = np.full((mapW,mapH,1),100, np.uint8)
 yaw = 0
 car_in_world_coord_z = 0
 car_in_world_coord_x = 0
+start_time=time.time()
 try:
     while True:
+        #print(time.time()-start_time)
+        start_time=time.time()
+        #if time.time()-start_time > 15:
+        #    pipelineT265.stop()
+        #    pipelineT265.start(configT265)
+        #    start_time=time.time()
+        #    print("restarting pipe")
         car_in_world_coord_x_previous = car_in_world_coord_x
         car_in_world_coord_z_previous = car_in_world_coord_z
         yaw_previous = yaw
-        start_time=time.time()
+        
         framesT265 = pipelineT265.wait_for_frames()
         framesD435 = pipelineD435.wait_for_frames()
         pose = framesT265.get_pose_frame()
         if pose:
             data = pose.get_pose_data()
+            #print(data.rotation, data.translation)
             w = data.rotation.w
             x = -data.rotation.z
             y = data.rotation.x
@@ -201,7 +210,7 @@ try:
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
         r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
 
-        #print(time.time() - start_time)
+        print(time.time() - start_time)
 
         
 
