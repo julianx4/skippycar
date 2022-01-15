@@ -1,7 +1,5 @@
 # skippycar
-Basics for a selfdriving RC car with realsense d435 and t265 camera support following an april tag
-
-Important to note: It doesn't work yet :)
+Selfdriving RC car with realsense D435 and T265 camera that follows an april tag
 
 Functions of the car:
 sensing.py
@@ -28,3 +26,5 @@ batterymeter.py
 
 
 Communication between all scripts is done via redis.
+
+Unfortunately the T265 camera doesn't work on the Raspberry Pi4 and the Raspberry Pi3 seems not powerful enough to manage all this, so it isn't working.

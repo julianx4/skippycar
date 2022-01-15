@@ -113,6 +113,7 @@ yaw = 0
 car_in_world_coord_z = 0
 car_in_world_coord_x = 0
 start_time=time.time()
+lasttime=time.time()
 try:
     while True:
         #print(time.time()-start_time)
@@ -176,7 +177,9 @@ try:
 
         visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
         visible_cone = visible_cone.reshape((-1, 1, 2))
-        #cv2.fillPoly(map, [visible_cone], (100,100,100))
+        if time.time()-lasttime > 3:
+            cv2.fillPoly(map, [visible_cone], (100,100,100))
+            lasttime=time.time()
 
         for x in range(0, realsenseW, 70):
             for y in range (0, realsenseH, 15):
@@ -186,7 +189,7 @@ try:
 
                 ### map 4x4m
                 mx = int(cx * 100 + (mapW / 2) - 3) #3cm correction of camera position off center
-                my = int((mapH - cz * 100) - 150) #car is 150cm from bottom
+                my = int((mapH - cz * 100) - 150) #car is 150cm from bottom of the map
     
                 c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
                 if c < 0 or c > 255:
@@ -199,16 +202,20 @@ try:
             cx, cy, cz = pixel_to_car_coord(int(x),int(y))
 
             ### send target coordinates to redis server
+            cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
             target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
-            r.psetex('target_car_coords', 800, target_coords_bytes) #target coordinates expire after xx milliseconds
+            target_world_coords_bytes = struct.pack('%sf' %3,* [cwx, cwy, cwz])
+            r.psetex('target_world_coords', 15000, target_world_coords_bytes) #target coordinates expire after xx milliseconds
+            r.psetex('target_car_coords', 1500, target_coords_bytes) #target coordinates expire after xx milliseconds
             
         map_to_redis(r,map,'map')
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
-        r.psetex('rotation', 1000, rotation_bytes) #yaw expire after xx milliseconds
+        r.psetex('rotation', 2000, rotation_bytes) #yaw expire after xx milliseconds
 
+        
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
-        r.psetex('car_in_world', 1000, car_in_world_bytes) #yaw expire after xx milliseconds
+        r.psetex('car_in_world', 2000, car_in_world_bytes) #yaw expire after xx milliseconds
 
         print(time.time() - start_time)
 
