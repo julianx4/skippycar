@@ -35,8 +35,8 @@ pipelineT265 = rs.pipeline()
 configT265 = rs.config()
 configT265.enable_device('908412110993') 
 configT265.enable_stream(rs.stream.pose)
-device = configT265.resolve(pipelineT265).get_device()
-pose_sensor = device.first_pose_sensor()
+deviceT265 = configT265.resolve(pipelineT265).get_device()
+pose_sensor = deviceT265.first_pose_sensor()
 pose_sensor.set_option(rs.option.enable_map_preservation, 1)
 pose_sensor.set_option(rs.option.enable_relocalization, 1)
 pose_sensor.set_option(rs.option.enable_pose_jumping, 1)
@@ -110,10 +110,16 @@ def car_coord_to_world_coord(x, y, z):
 
 map = np.full((mapW,mapH,1),100, np.uint8)
 yaw = 0
+last_time_clear_map = time.time()
 car_in_world_coord_z = 0
 car_in_world_coord_x = 0
 start_time=time.time()
-lasttime=time.time()
+last_time_pipe_restart=time.time()
+yaw_temp = 0
+car_in_world_coord_x_temp = 0
+car_in_world_coord_y_temp = 0
+car_in_world_coord_z_temp = 0
+app_start_time=time.time()
 try:
     while True:
         #print(time.time()-start_time)
@@ -137,13 +143,28 @@ try:
             x = -data.rotation.z
             y = data.rotation.x
             z = -data.rotation.y
-            car_in_world_coord_x = data.translation.x
-            car_in_world_coord_y = data.translation.y
-            car_in_world_coord_z = -data.translation.z
+            car_in_world_coord_x = data.translation.x + car_in_world_coord_x_temp
+            car_in_world_coord_y = data.translation.y + car_in_world_coord_y_temp
+            car_in_world_coord_z = -data.translation.z + car_in_world_coord_z_temp
 
             pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #1.7 degree misalignment between T265 tracking camera and D435 depth camera
-            roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi;
-            yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi;
+            roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
+            yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi + yaw_temp
+            if time.time() - last_time_pipe_restart > 30:
+                car_in_world_coord_x_temp = car_in_world_coord_x
+                car_in_world_coord_y_temp = car_in_world_coord_y
+                car_in_world_coord_z_temp = car_in_world_coord_z
+                yaw_temp = yaw
+                before_restart = time.time()
+                pipelineT265.stop()                 #restarting T265 because it doesn't work properly on RPi4
+                deviceT265.hardware_reset()
+                print("reset done")
+                configT265.enable_device('908412110993') 
+                configT265.enable_stream(rs.stream.pose)
+                pipelineT265.start(configT265)
+                last_time_pipe_restart = time.time()                
+                map = np.full((mapW,mapH,1),100, np.uint8)
+                print("T265 restarted in " , str(time.time()-before_restart) , " seconds")
             #print(pitch)
         else:
             pitch = 0
@@ -177,9 +198,9 @@ try:
 
         visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
         visible_cone = visible_cone.reshape((-1, 1, 2))
-        if time.time()-lasttime > 3:
+        if time.time()-last_time_clear_map > 3:
             cv2.fillPoly(map, [visible_cone], (100,100,100))
-            lasttime=time.time()
+            last_time_clear_map=time.time()
 
         for x in range(0, realsenseW, 70):
             for y in range (0, realsenseH, 15):
@@ -205,24 +226,25 @@ try:
             cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
             target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
             target_world_coords_bytes = struct.pack('%sf' %3,* [cwx, cwy, cwz])
-            r.psetex('target_world_coords', 15000, target_world_coords_bytes) #target coordinates expire after xx milliseconds
-            r.psetex('target_car_coords', 1500, target_coords_bytes) #target coordinates expire after xx milliseconds
+            r.psetex('target_world_coords', 3000, target_world_coords_bytes) #target coordinates expire after xx milliseconds
+            r.psetex('target_car_coords', 3000, target_coords_bytes) #target coordinates expire after xx milliseconds
             
         map_to_redis(r,map,'map')
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
-        r.psetex('rotation', 2000, rotation_bytes) #yaw expire after xx milliseconds
+        r.psetex('rotation', 1400, rotation_bytes) #yaw expire after xx milliseconds
 
         
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
-        r.psetex('car_in_world', 2000, car_in_world_bytes) #yaw expire after xx milliseconds
-
+        r.psetex('car_in_world', 1400, car_in_world_bytes) #yaw expire after xx milliseconds
+        print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z, yaw)
         print(time.time() - start_time)
 
         
 
 except (RuntimeError,KeyboardInterrupt) as e:
-    print("well shit")
+    print("well shit",e)
+    print("I ran for", time.time()-app_start_time, "seconds")
     #slam_map = pose_sensor.export_localization_map()
     #print(slam_map)
     #with open ('localization_map.map','w') as mapfile:

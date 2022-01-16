@@ -36,41 +36,27 @@ def redis_to_map(redis,name):
 def angle_and_distance_to_target():
     received_target_coords = r.get('target_world_coords')
     received_car_in_world_coords = r.get('car_in_world')
+    rotation_received = r.get('rotation')
     
-    if received_target_coords is not None and received_car_in_world_coords is not None:
+    if received_target_coords is not None and received_car_in_world_coords is not None and rotation_received is not None:
+        bla, bla, car_yaw_to_world = np.array(struct.unpack('%sf' %3, rotation_received))
         target_world_coords = np.array(struct.unpack('%sf' %3, received_target_coords))
         car_world_coords = np.array(struct.unpack('%sf' %3, received_car_in_world_coords))
         car2target_vector3D = target_world_coords - car_world_coords
         car2target_vector = [car2target_vector3D[0],car2target_vector3D[2]]
-        print(car2target_vector)
+        
         z_vector=np.array([0,1])
-        angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) #- car_yaw_to_world
-        distance = np.linalg.norm(car2target_vector)       
-        #print(angle)
+        angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) - car_yaw_to_world
+        distance = np.linalg.norm(car2target_vector)     
+        print(angle)  
         return angle, distance
     else:
         return False, False
-
-#def angle_and_distance_to_target():
-#    received_target_coords = r.get('target_car_coords')
-#    if received_target_coords is not None:
-#        target_car_coords = np.array(struct.unpack('%sf' %3, received_target_coords))   
-#        car2target_vector = [target_car_coords[0],target_car_coords[2]]
-#        #print(car2target_vector)
-#        z_vector=np.array([0,1])
-#        angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) #- car_yaw_to_world
-#        distance = np.linalg.norm(car2target_vector)       
-#        #print(angle)
-#        return angle, distance
-#    else:
-#        return False, False
-
 
 def direction_and_speed():
     starttime=time.time()
     
     angle, distance = angle_and_distance_to_target()
-    
     if angle is False:
         r.psetex('path', 1000, -1)
 
@@ -121,42 +107,45 @@ def direction_and_speed():
             bgmask= cv2.bitwise_not(mask)
             bg = cv2.bitwise_and(bg,bgmask)
             crop = crop + bg
-            
-            
+
             min_height = crop.min() - 100
             max_height_previous_step = max_height
             max_height = crop.max() - 100
             
-            if square > 4:
+            if square > 6:
                 height_difference_cost += (max_height - min_height) / 4
                 square_to_square_cost += (abs(max_height - max_height_previous_step)) / 4
             
             else:
-                if max_height - min_height > 10:
-                    height_difference_cost += 1000
-                else:
-                    height_difference_cost += max_height - min_height
+                #if max_height - min_height > 10:
+                #    height_difference_cost += 1000
+                #else:
+                #    height_difference_cost += max_height - min_height
 
                 if abs(max_height - max_height_previous_step) > 10:
                     square_to_square_cost += 1000
+                    print(path,square)
                 else:
                     square_to_square_cost += abs(max_height - max_height_previous_step)
-                
+  
         total_cost = height_difference_cost + angle_cost + square_to_square_cost
         path_costs[path] = total_cost
-    print(path_costs)
-    print(in_front_of_car)
     current_path = path_costs.index(min(path_costs))
+    print(current_path)
     if min(path_costs) > 1000 or in_front_of_car > 10 or distance < 0.5:
+        print("stopping: obstacle", in_front_of_car, "distance to target",distance, "min path cost",min(path_costs))
+        r.set('speed', 0)
         return
     else:
         r.psetex('path', 1000, current_path)
-        r.psetex('speed', 300, 30)
+        r.psetex('speed', 1000, 30)
         if current_path > 5:
-            path_lookup = path - 5
+            path_lookup = current_path - 5
             steering_angle = -pc.paths[path_lookup]['steering_angle']
         else:
+            path_lookup = current_path
             steering_angle = pc.paths[path_lookup]['steering_angle']
+        print(steering_angle)
         r.psetex('angle', 1000, steering_angle)
 
     return current_path

@@ -10,7 +10,7 @@ paths = \
 [-123, 1745, 123, 1745],
 [-123, 1980, 123, 1980]]),
 
-dict(steering_angle = 4, target_angle = 11, coords = \
+dict(steering_angle = 11, target_angle = 11, coords = \
 [[138.322, 100, -123, 100],
 [159.503, 321.132, -99.3681, 351.273],
 [190.588, 546.85, -66.7938, 587.805],
@@ -22,7 +22,7 @@ dict(steering_angle = 4, target_angle = 11, coords = \
 [571.96, 1856.02, 332.85, 1959.7]
 ]),
 
-dict(steering_angle = 7.5, target_angle = 18, coords = \
+dict(steering_angle = 15, target_angle = 18, coords = \
 [[156.086, 100, -123, 100],
 [190.178, 271.401,-78.3038, 334.508],
 [248.678, 479.838, -13.4327, 565.647],
@@ -34,7 +34,7 @@ dict(steering_angle = 7.5, target_angle = 18, coords = \
 [945.357, 1559.75, 759.127, 1763.17]
 ]),
 
-dict(steering_angle = 13.2, target_angle = 25, coords = \
+dict(steering_angle = 20, target_angle = 25, coords = \
 [[183.207, 100, -123, 100],
 [234.5, 242.056, -37.6253, 357.107],
 [313.699, 400.78, 58.1394, 549.03],

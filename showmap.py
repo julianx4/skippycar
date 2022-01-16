@@ -14,7 +14,7 @@ last_time=0
 
 font = cv2.FONT_HERSHEY_SIMPLEX
 
-map_refresh = 0.25 # interval between map refresh
+map_refresh = 0.8 # interval between map refresh
 
 map = np.full((mapW,mapH,3),100, np.uint8)
 
@@ -45,7 +45,7 @@ while True:
     elif int(path_received) == -1:
         pass
     else:
-        path = 1#int(path_received)
+        path = int(path_received)
         if path > 5:
             path_lookup = path - 5
             l = -1
@@ -53,7 +53,7 @@ while True:
             path_lookup = path
             l = 1
         for square in range(0, 8):
-            print(path,square)
+            #print(path,square)
             x0 = int(l * pc.paths[path_lookup]['coords'][square][0] / 10 + mapW / 2)
             y0 = mapH - int(pc.paths[path_lookup]['coords'][square][1] / 10 + 150)
             x1 = int(l * pc.paths[path_lookup]['coords'][square][2] / 10 + mapW / 2)
