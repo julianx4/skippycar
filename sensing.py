@@ -22,7 +22,7 @@ from scipy.spatial.transform import Rotation as R
 r = redis.Redis(host='localhost', port=6379, db=0)
 
 realsenseW = 640
-realsenseH = 480
+realsenseH = 360
 
 mapW = 400
 mapH = 400
@@ -120,6 +120,7 @@ car_in_world_coord_x_temp = 0
 car_in_world_coord_y_temp = 0
 car_in_world_coord_z_temp = 0
 app_start_time=time.time()
+last_time_3d_image = time.time()
 try:
     while True:
         #print(time.time()-start_time)
@@ -151,10 +152,10 @@ try:
             roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
             yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi + yaw_temp
             if time.time() - last_time_pipe_restart > 30:
-                car_in_world_coord_x_temp = car_in_world_coord_x
-                car_in_world_coord_y_temp = car_in_world_coord_y
-                car_in_world_coord_z_temp = car_in_world_coord_z
-                yaw_temp = yaw
+                car_in_world_coord_x_temp = 0 #car_in_world_coord_x
+                car_in_world_coord_y_temp = 0 #car_in_world_coord_y
+                car_in_world_coord_z_temp = 0 #car_in_world_coord_z
+                yaw_temp = 0 #yaw
                 before_restart = time.time()
                 pipelineT265.stop()                 #restarting T265 because it doesn't work properly on RPi4
                 deviceT265.hardware_reset()
@@ -187,9 +188,10 @@ try:
 
         if not aligned_depth_frame or not color_frame:
             continue
-        color_image = np.asanyarray(color_frame.get_data())
-        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-
+        if time.time() - last_time_3d_image > 0.5:
+            color_image = np.asanyarray(color_frame.get_data())
+            gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+            last_time_3d_image = time.time()
         
         yaw_increment = yaw - yaw_previous
         car_in_world_coord_x_increment = car_in_world_coord_x - car_in_world_coord_x_previous
@@ -198,10 +200,11 @@ try:
 
         visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
         visible_cone = visible_cone.reshape((-1, 1, 2))
-        if time.time()-last_time_clear_map > 3:
+        if time.time() - last_time_clear_map > 3: #map is cleared every 3 seconds to avoid old data
             cv2.fillPoly(map, [visible_cone], (100,100,100))
             last_time_clear_map=time.time()
 
+        
         for x in range(0, realsenseW, 70):
             for y in range (0, realsenseH, 15):
                 cx, cy, cz = pixel_to_car_coord(x, y)
@@ -209,13 +212,14 @@ try:
                     continue
 
                 ### map 4x4m
-                mx = int(cx * 100 + (mapW / 2) - 3) #3cm correction of camera position off center
+                mx = int(cx * 100 + (mapW / 2) - 0) #3cm correction of camera position off center
                 my = int((mapH - cz * 100) - 150) #car is 150cm from bottom of the map
     
                 c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
                 if c < 0 or c > 255:
                     continue
                 cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
+            
             
         
         for result in detector.detect(gray):

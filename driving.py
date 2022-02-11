@@ -8,7 +8,7 @@ from adafruit_servokit import ServoKit
 r = redis.Redis(host='localhost', port=6379, db=0)
 kit = ServoKit(channels=16)
 
-speed_cap = 30 #percentage of max speed
+speed_cap = 32 #percentage of max speed
 #steering angle 30 - 150
 
 throttle_stop = 72
@@ -39,16 +39,15 @@ def driving_speed(speed):
 
 driving = True
 while driving:
-    #voltages_received = r.get('voltages')
-    #if voltages_received is None:
-    #    print("no battery info")
-    #    break
-    #else:
-    #    voltages = np.array(struct.unpack('%sf' %2, voltages_received))
-    
-    #if voltages.any() < 3.7:
-    #    print("battery low")
-    #    break
+    voltages_received = r.get('voltages')
+    if voltages_received is None:
+        print("no battery info")
+        break
+    else:
+        voltages = np.array(struct.unpack('%sf' %2, voltages_received))
+    if voltages.min() < 3.7:
+        print(voltages.min())
+        break
 
     speed_received = r.get('speed')
     if speed_received is None:

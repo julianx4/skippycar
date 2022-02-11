@@ -19,6 +19,6 @@ while True:
     VoltageLastMeasured=time.time()
     voltages_bytes = struct.pack('%sf' %2,* [cell1, cell2])
     print(struct.unpack('%sf' %2,voltages_bytes))
-    r.setex('voltages', 2, voltages_bytes)
+    r.setex('voltages', 15, voltages_bytes)
 
     time.sleep(VoltageMeasuringPeriod)
