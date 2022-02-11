@@ -1,3 +1,4 @@
+#x0 y0 x1 y1
 paths = \
 [dict(steering_angle = 0, target_angle = 0, coords = \
 [[-123, 100, 123, 100],
