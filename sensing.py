@@ -252,7 +252,9 @@ try:
         r.psetex('car_in_world', 1400, car_in_world_bytes)
         r.psetex('current_speed', 1000, speed)
         print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z, yaw)
-        print(time.time() - start_time)
+        sensing_time = time.time() - start_time
+        r.psetex('log_sensing_time',1000, sensing_time)
+        print(sensing_time)
 
         
 

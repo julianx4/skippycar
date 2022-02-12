@@ -17,6 +17,8 @@ yaw = 0
 target_world_coords = None
 target_car_coords = None
 
+in_front_of_car = 0
+
 rotation_yaw_car_to_world = R.from_rotvec(0 * np.array([0, 1, 0]), degrees=True).as_matrix()
 rotation_yaw_world_to_car = R.from_rotvec(-0 * np.array([0, 1, 0]), degrees=True).as_matrix()
 
@@ -49,6 +51,8 @@ def angle_and_distance_to_target():
         z_vector=np.array([0,1])
         angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) - car_yaw_to_world
         distance = np.linalg.norm(car2target_vector)     
+        r.psetex('log_target_distance', 1000, distance)
+        r.psetex('log_target_angle', 1000, angle)
         #print("angle", angle)  
         return angle, distance
     else:
@@ -72,6 +76,8 @@ def direction_and_speed():
     #crop = map[230:250,187:213]
     crop = map[230:250,191:209]
     in_front_of_car = crop.max() - 100
+    r.psetex('log_in_front_of_car', 1000, float(in_front_of_car))
+    print(in_front_of_car)
     
     start = time.time()
 
@@ -141,11 +147,12 @@ def direction_and_speed():
 
     print("Zeit",time.time() - start)
     minpathcost = min(path_costs)
+    r.psetex('path_min_cost', 1000, minpathcost)
     current_path = path_costs.index(minpathcost)
     print("current path", current_path, minpathcost)
 
     if min(path_costs) > 1000 or in_front_of_car > 10 or distance < 0.9:
-        print("stopping: obstacle", in_front_of_car, "distance to target",distance, "min path cost",min(path_costs))
+        print("stopping: obstacle", in_front_of_car, "distance to target",distance, "min path cost",minpathcost)
         r.set('speed', 0)
         return
     else:
