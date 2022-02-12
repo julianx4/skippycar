@@ -18,10 +18,9 @@ throttle_full_reverse = 0
 steering_pin = 15
 esc_pin = 14
 
-voltages=[4.2, 4.2]
-voltages_bytes = struct.pack('%sf' %2,* voltages)
-r.set('voltages', voltages_bytes)
-
+#voltages=[4.2, 4.2]
+#voltages_bytes = struct.pack('%sf' %2,* voltages)
+#r.set('voltages', voltages_bytes)
 
 def steering_angle(angle):
     if angle > 55:
@@ -30,7 +29,7 @@ def steering_angle(angle):
         angle = -55
     kit.servo[steering_pin].angle = -angle + 88
 
-def driving_speed(speed):
+def driving_speed_signal(speed):
     if speed > 100:
         speed = 100
     if speed < -72:
@@ -38,6 +37,7 @@ def driving_speed(speed):
     kit.servo[esc_pin].angle = speed * speed_cap / 100 + 72
 
 driving = True
+in_motion_start = time.time()
 while driving:
     voltages_received = r.get('voltages')
     if voltages_received is None:
@@ -45,20 +45,39 @@ while driving:
         break
     else:
         voltages = np.array(struct.unpack('%sf' %2, voltages_received))
-    if voltages.min() < 3.7:
+    if voltages.min() < 3.5:
         print(voltages.min())
         break
 
-    speed_received = r.get('speed')
-    if speed_received is None:
+    target_speed = r.get('speed')
+    current_speed_received = r.get('current_speed')
+    
+    if current_speed_received is not None:
+        current_speed = float(current_speed_received)
+        print(current_speed)
+
+    if target_speed is None:
         print("no driving input received")
-        driving_speed(0)
+        driving_speed_signal(0)
+        in_motion_start = time.time()
     else:
-        driving_speed(float(speed_received))
+        target_speed = float(target_speed)
+        if target_speed > 0:
+            if current_speed < 0.05 and time.time() - in_motion_start > 2:
+                driving_speed_signal(target_speed * 1.5)
+                print("driving faster")
+            else:
+                driving_speed_signal(target_speed * 1)
+                print("driving normal speed")
+        else:
+            driving_speed_signal(0)
+            print("stopped")
+            in_motion_start = time.time()
+
 
     angle_received = r.get('angle')
     if angle_received is None:
-        print("no steering input received")
+        #print("no steering input received")
         steering_angle(0)
     else:
         steering_angle(float(angle_received))
@@ -67,13 +86,11 @@ while driving:
 
 
 print("stopping")
-driving_speed(0)
-steering_angle(120)
+driving_speed_signal(0)
+steering_angle(-20)
 time.sleep(1)
-steering_angle(60)
+steering_angle(20)
 time.sleep(1)
-steering_angle(120)
+steering_angle(-20)
 time.sleep(1)
-steering_angle(60)
-time.sleep(1)
-steering_angle(90)
+steering_angle(0)

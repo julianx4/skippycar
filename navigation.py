@@ -55,7 +55,7 @@ def angle_and_distance_to_target():
         return False, False
 
 def direction_and_speed():
-    starttime=time.time()
+    starttime = time.time()
     
     angle, distance = angle_and_distance_to_target()
     if angle is False:

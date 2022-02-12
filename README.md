@@ -27,4 +27,8 @@ batterymeter.py
 
 Communication between all scripts is done via redis.
 
-Unfortunately the T265 camera doesn't work on the Raspberry Pi4 and the Raspberry Pi3 seems not powerful enough to manage all this, so it isn't working.
+Unfortunately the T265 camera doesn't work on the Raspberry Pi4 and the Raspberry Pi3 seems not powerful enough to manage all this, so it is frustrating.
+
+Open issues:
+- set speed is sometimes not enough to overcome obstacles, need to use T265 velocity information to control speed
+-

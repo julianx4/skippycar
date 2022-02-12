@@ -120,7 +120,7 @@ car_in_world_coord_x_temp = 0
 car_in_world_coord_y_temp = 0
 car_in_world_coord_z_temp = 0
 app_start_time=time.time()
-last_time_3d_image = time.time()
+last_time_3d_image = time.time() - 5
 try:
     while True:
         #print(time.time()-start_time)
@@ -144,6 +144,11 @@ try:
             x = -data.rotation.z
             y = data.rotation.x
             z = -data.rotation.y
+            speedx = data.velocity.x
+            speedy = data.velocity.y
+            speedz = data.velocity.z
+            speed = m.sqrt(speedx*speedx + speedy*speedy + speedz*speedz)
+
             car_in_world_coord_x = data.translation.x + car_in_world_coord_x_temp
             car_in_world_coord_y = data.translation.y + car_in_world_coord_y_temp
             car_in_world_coord_z = -data.translation.z + car_in_world_coord_z_temp
@@ -188,10 +193,10 @@ try:
 
         if not aligned_depth_frame or not color_frame:
             continue
-        if time.time() - last_time_3d_image > 0.5:
-            color_image = np.asanyarray(color_frame.get_data())
-            gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-            last_time_3d_image = time.time()
+
+        color_image = np.asanyarray(color_frame.get_data())
+        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        last_time_3d_image = time.time()
         
         yaw_increment = yaw - yaw_previous
         car_in_world_coord_x_increment = car_in_world_coord_x - car_in_world_coord_x_previous
@@ -236,11 +241,12 @@ try:
         map_to_redis(r,map,'map')
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
-        r.psetex('rotation', 1400, rotation_bytes) #yaw expire after xx milliseconds
+        r.psetex('rotation', 1400, rotation_bytes)
 
         
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
-        r.psetex('car_in_world', 1400, car_in_world_bytes) #yaw expire after xx milliseconds
+        r.psetex('car_in_world', 1400, car_in_world_bytes)
+        r.psetex('current_speed', 1000, speed)
         print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z, yaw)
         print(time.time() - start_time)
 
