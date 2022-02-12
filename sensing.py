@@ -147,7 +147,6 @@ try:
             speedx = data.velocity.x
             speedy = data.velocity.y
             speedz = data.velocity.z
-            speed = m.sqrt(speedx*speedx + speedy*speedy + speedz*speedz)
 
             car_in_world_coord_x = data.translation.x + car_in_world_coord_x_temp
             car_in_world_coord_y = data.translation.y + car_in_world_coord_y_temp
@@ -179,7 +178,12 @@ try:
             car_in_world_coord_x = 0
             car_in_world_coord_y = 0
             car_in_world_coord_z = 0
-        
+            speedx = 0
+            speedy = 0
+            speedz = 0
+            
+        speed = m.sqrt(speedx*speedx + speedy*speedy + speedz*speedz)
+
         rotation_roll = R.from_rotvec(roll * np.array([0, 0, 1]), degrees=True).as_matrix()
         rotation_pitch = R.from_rotvec(pitch * np.array([1, 0, 0]), degrees=True).as_matrix()
         rotation=np.matmul(rotation_roll, rotation_pitch)
