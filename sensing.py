@@ -21,11 +21,17 @@ from scipy.spatial.transform import Rotation as R
 
 r = redis.Redis(host='localhost', port=6379, db=0)
 
-realsenseW = 640
-realsenseH = 360
+realsense_depth_W = 640
+realsense_depth_H = 360
+
+realsense_color_W = 640
+realsense_color_H = 360
+
 
 mapW = 400
 mapH = 400
+
+pi4 = False
 
 camera_height=0.25 #mounting height of the depth camera vs. ground
 
@@ -48,8 +54,9 @@ pipelineT265.start(configT265)
 pipelineD435 = rs.pipeline()
 configD435 = rs.config()
 configD435.enable_device('143322074867') 
-configD435.enable_stream(rs.stream.depth, realsenseW, realsenseH, rs.format.z16, 30)
-configD435.enable_stream(rs.stream.color, realsenseW, realsenseH, rs.format.bgr8, 30)
+configD435.enable_stream(rs.stream.depth, realsense_depth_W, realsense_depth_H, rs.format.z16, 15)
+#configD435.enable_stream(rs.stream.infrared, 1, 640, 360, rs.format.y8, 30)
+configD435.enable_stream(rs.stream.color, realsense_color_W, realsense_color_H, rs.format.bgr8, 15)
 
 pipeline_wrapper = rs.pipeline_wrapper(pipelineD435)
 pipeline_profile = configD435.resolve(pipeline_wrapper)
@@ -66,13 +73,24 @@ if not found_rgb:
 
 profile = pipelineD435.start(configD435)
 
-stream_profile = profile.get_stream(rs.stream.color)
-intrinsics = stream_profile.as_video_stream_profile().get_intrinsics()
+depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+depth_min = 0.2 #meter
+depth_max = 10.0 #meter
 
-align_to = rs.stream.color
-align = rs.align(align_to)
+stream_profile_depth = profile.get_stream(rs.stream.depth)
+intrinsics_depth = stream_profile_depth.as_video_stream_profile().get_intrinsics()
 
-aligned_depth_frame = None
+stream_profile_color = profile.get_stream(rs.stream.color)
+intrinsics_color = stream_profile_color.as_video_stream_profile().get_intrinsics()
+
+depth_to_color_extrinsics =  profile.get_stream(rs.stream.depth).as_video_stream_profile().get_extrinsics_to( profile.get_stream(rs.stream.color))
+color_to_depth_extrinsics =  profile.get_stream(rs.stream.color).as_video_stream_profile().get_extrinsics_to( profile.get_stream(rs.stream.depth))
+
+
+#align_to = rs.stream.color
+#align = rs.align(align_to)
+
+depth_frame = None
 
 def map_to_redis(redis,array,name):
     h, w = array.shape[:2]
@@ -92,9 +110,17 @@ def rotate_and_move_map(map, angle, up, right):
     result = cv2.warpAffine(result_rot, move_mat, (result_rot.shape[1], result_rot.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(100,100,100))
     return result
 
+def color_pixel_to_depth_pixel(x,y):
+    depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
+        depth_frame.get_data(), depth_scale, depth_min, depth_max, 
+        intrinsics_depth, intrinsics_color, depth_to_color_extrinsics, 
+        color_to_depth_extrinsics, [x,y])
+    return depthx, depthy
+
+
 def pixel_to_car_coord(x, y):
-    dist = aligned_depth_frame.get_distance(x, y)
-    cx,cy,cz = rs.rs2_deproject_pixel_to_point(intrinsics, [x, y], dist)
+    dist = depth_frame.get_distance(x, y)
+    cx,cy,cz = rs.rs2_deproject_pixel_to_point(intrinsics_depth, [x, y], dist)
     c=np.array([cx,cy,cz])
     cx,cy,cz=np.matmul(rotation,c)
     cy = camera_height - cy
@@ -120,23 +146,20 @@ car_in_world_coord_x_temp = 0
 car_in_world_coord_y_temp = 0
 car_in_world_coord_z_temp = 0
 app_start_time=time.time()
-last_time_3d_image = time.time() - 5
 try:
     while True:
-        #print(time.time()-start_time)
         start_time=time.time()
-        #if time.time()-start_time > 15:
-        #    pipelineT265.stop()
-        #    pipelineT265.start(configT265)
-        #    start_time=time.time()
-        #    print("restarting pipe")
         car_in_world_coord_x_previous = car_in_world_coord_x
         car_in_world_coord_z_previous = car_in_world_coord_z
         yaw_previous = yaw
-        
-        framesT265 = pipelineT265.wait_for_frames()
+
+                
+        framesT265 = pipelineT265.wait_for_frames(1000)
         framesD435 = pipelineD435.wait_for_frames()
+        
         pose = framesT265.get_pose_frame()
+
+        
         if pose:
             data = pose.get_pose_data()
             #print(data.rotation, data.translation)
@@ -152,10 +175,10 @@ try:
             car_in_world_coord_y = data.translation.y + car_in_world_coord_y_temp
             car_in_world_coord_z = -data.translation.z + car_in_world_coord_z_temp
 
-            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.7; #1.7 degree misalignment between T265 tracking camera and D435 depth camera
+            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.3; #1.3 degree misalignment between T265 tracking camera and D435 depth camera
             roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
             yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi + yaw_temp
-            if time.time() - last_time_pipe_restart > 30:
+            if time.time() - last_time_pipe_restart > 30 and pi4:
                 car_in_world_coord_x_temp = 0 #car_in_world_coord_x
                 car_in_world_coord_y_temp = 0 #car_in_world_coord_y
                 car_in_world_coord_z_temp = 0 #car_in_world_coord_z
@@ -191,11 +214,11 @@ try:
         rotation_yaw = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
         world_coord_rotation = np.matmul(rotation, rotation_yaw)
 
-        aligned_frames = align.process(framesD435)
-        aligned_depth_frame = aligned_frames.get_depth_frame()
-        color_frame = aligned_frames.get_color_frame()
+        color_frame = framesD435.get_color_frame()
+        #color_frame = framesD435.get_infrared_frame(1)
+        depth_frame = framesD435.get_depth_frame()
 
-        if not aligned_depth_frame or not color_frame:
+        if not color_frame or not depth_frame:
             continue
 
         color_image = np.asanyarray(color_frame.get_data())
@@ -210,18 +233,19 @@ try:
         visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
         visible_cone = visible_cone.reshape((-1, 1, 2))
         if time.time() - last_time_clear_map > 3: #map is cleared every 3 seconds to avoid old data
-            cv2.fillPoly(map, [visible_cone], (100,100,100))
+            #cv2.fillPoly(map, [visible_cone], (100,100,100))
+            map = np.full((mapW,mapH,1),100, np.uint8)
             last_time_clear_map=time.time()
 
-        
-        for x in range(0, realsenseW, 70):
-            for y in range (0, realsenseH, 15):
+        cv2.rectangle(map, (188,230),(212,241), 100, -1) #clear area directly in front of car to avoid wrong information
+        for x in range(0, realsense_depth_W, 50): #70
+            for y in range (0, int(realsense_depth_H), 10): #15
                 cx, cy, cz = pixel_to_car_coord(x, y)
                 if cy > 0.4:					#ignore obstacles above car height
                     continue
 
                 ### map 4x4m
-                mx = int(cx * 100 + (mapW / 2) - 0) #3cm correction of camera position off center
+                mx = int(cx * 100 + (mapW / 2) - 1.5) #3cm correction of camera position off center
                 my = int((mapH - cz * 100) - 150) #car is 150cm from bottom of the map
     
                 c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
@@ -229,19 +253,17 @@ try:
                     continue
                 cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
             
-            
         
         for result in detector.detect(gray):
             x,y = result.center
+            x,y = color_pixel_to_depth_pixel(x, y)
             cx, cy, cz = pixel_to_car_coord(int(x),int(y))
-
-            ### send target coordinates to redis server
             cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
             target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
             target_world_coords_bytes = struct.pack('%sf' %3,* [cwx, cwy, cwz])
             r.psetex('target_world_coords', 3000, target_world_coords_bytes) #target coordinates expire after xx milliseconds
             r.psetex('target_car_coords', 3000, target_coords_bytes) #target coordinates expire after xx milliseconds
-            
+        
         map_to_redis(r,map,'map')
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
@@ -251,18 +273,16 @@ try:
         car_in_world_bytes = struct.pack('%sf' %3,* [car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z])
         r.psetex('car_in_world', 1400, car_in_world_bytes)
         r.psetex('current_speed', 1000, speed)
-        print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z, yaw)
-        sensing_time = time.time() - start_time
+        r.psetex('log_uptime',1000, time.time() - app_start_time)
+        r.psetex('log_sensing_running', 1000, "on")
+        #print(car_in_world_coord_x, car_in_world_coord_y, car_in_world_coord_z, yaw)
+        sensing_time = time.time() - start_time           
         r.psetex('log_sensing_time',1000, sensing_time)
-        print(sensing_time)
+        #print("sensing time", sensing_time)
 
         
 
 except (RuntimeError,KeyboardInterrupt) as e:
     print("well shit",e)
     print("I ran for", time.time()-app_start_time, "seconds")
-    #slam_map = pose_sensor.export_localization_map()
-    #print(slam_map)
-    #with open ('localization_map.map','w') as mapfile:
-    #    for l in slam_map:
-    #        mapfile.write(str(l)+"\n")
+

@@ -8,7 +8,7 @@ from adafruit_servokit import ServoKit
 r = redis.Redis(host='localhost', port=6379, db=0)
 kit = ServoKit(channels=16)
 
-speed_cap = 32 #percentage of max speed
+speed_cap = 30 #percentage of max speed
 #steering angle 30 - 150
 
 throttle_stop = 72
@@ -18,9 +18,22 @@ throttle_full_reverse = 0
 steering_pin = 15
 esc_pin = 14
 
-#voltages=[4.2, 4.2]
-#voltages_bytes = struct.pack('%sf' %2,* voltages)
-#r.set('voltages', voltages_bytes)
+frontdiff_pin = 11
+reardiff_pin = 13
+gearbox_pin = 12
+
+gear1 = 60
+gear2 = 110
+
+rear_diff_open = 78
+rear_diff_closed = 15
+
+front_diff_closed = 120
+front_diff_open = 55
+
+kit.servo[gearbox_pin].angle = gear1
+kit.servo[reardiff_pin].angle = rear_diff_closed
+kit.servo[frontdiff_pin].angle = front_diff_closed
 
 def steering_angle(angle):
     if angle > 55:
@@ -54,10 +67,10 @@ while driving:
     
     if current_speed_received is not None:
         current_speed = float(current_speed_received)
-        print(current_speed)
+        #print(current_speed)
 
     if target_speed is None:
-        print("no driving input received")
+        #print("no driving input received")
         driving_speed_signal(0)
         in_motion_start = time.time()
     else:
@@ -65,13 +78,13 @@ while driving:
         if target_speed > 0:
             if current_speed < 0.05 and time.time() - in_motion_start > 2:
                 driving_speed_signal(target_speed * 1.5)
-                print("driving faster")
+                #print("driving faster")
             else:
                 driving_speed_signal(target_speed * 1)
-                print("driving normal speed")
+                #print("driving normal speed")
         else:
             driving_speed_signal(0)
-            print("stopped")
+            #print("stopped")
             in_motion_start = time.time()
 
 
@@ -81,7 +94,7 @@ while driving:
         steering_angle(0)
     else:
         steering_angle(float(angle_received))
-
+    r.psetex('log_driving_running', 1000, "on")
     time.sleep(0.03) # ???
 
 
