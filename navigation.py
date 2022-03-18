@@ -100,7 +100,7 @@ while True:
             
             angle_cost = abs(target_angle - angle) * 2
             
-            for square in range(0, 4):
+            for square in range(0, 6):
                 #print(path,square)
                 
                 x0 = int(l * pc.paths[path_lookup]['coords'][square][0] / 10 + mapW / 2)

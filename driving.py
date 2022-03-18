@@ -8,7 +8,7 @@ from adafruit_servokit import ServoKit
 r = redis.Redis(host='localhost', port=6379, db=0)
 kit = ServoKit(channels=16)
 
-speed_cap = 30 #percentage of max speed
+speed_cap = 45 #percentage of max speed
 #steering angle 30 - 150
 
 throttle_stop = 72

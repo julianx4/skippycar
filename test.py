@@ -4,8 +4,24 @@ import struct
 import cv2
 import time
 import curved_paths_coords as pc
+from threading import Thread
+r = redis.Redis(host='192.168.0.101', port=6379, db=0)
 
-r = redis.Redis(host='localhost', port=6379, db=0)
+log_sensing_running =\
+log_navigation_running =\
+log_batterymeter_running =\
+log_driving_running =\
+log_detect_cam =\
+voltages1_and_2 =\
+log_sensing_time=\
+log_target_distance_angle=\
+log_path=\
+log_path_min_cost=\
+log_current_speed=\
+log_in_front_of_car=\
+log_uptime =\
+path_received =\
+received_target_coords = None
 
 mapW = 400
 mapH = 400
@@ -28,7 +44,7 @@ def redis_to_map(redis,name):
         array = cv2.cvtColor(array,cv2.COLOR_GRAY2RGB)
         return array
 
-while True:
+def update_data():
     log_sensing_time_received = r.get('log_sensing_time')
     if log_sensing_time_received is not None:
         log_sensing_time = round(float(log_sensing_time_received),2)
@@ -118,17 +134,20 @@ while True:
     else:
         log_detect_cam = "None"
 
-        
-    last_time = time.time()
     map = redis_to_map(r, "map")
 
+    path_received = r.get('path')
+
+    received_target_coords = r.get('target_car_coords')
+
+def display_data():      
     cv2.rectangle(map,(187,242),(213,305),(0, 100, 255),-1) #draw car
     visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
     visible_cone = visible_cone.reshape((-1, 1, 2))
     cv2.polylines(map, [visible_cone], True, (255,255,255), 1)
 
     color_path = (0,255,0)
-    path_received = r.get('path')
+    
     if path_received is None:
         pass    
     elif int(path_received) == -1:
@@ -156,7 +175,7 @@ while True:
             poly = poly.reshape((-1, 1, 2))
             cv2.polylines(map,[poly],True,(255,255,255),1)
 
-    received_target_coords = r.get('target_car_coords')
+    
     if received_target_coords is not None:
         target_car_coords = np.array(struct.unpack('%sf' %3, received_target_coords))   
         mx = int(target_car_coords[0] * 100 + mapW / 2)
@@ -215,11 +234,40 @@ while True:
         count +=1
         cv2.putText(map, str(text), (310, 300 + 10 * count), font, 0.4, (255,255,255), 1)
 
+def try_to_connect():
+    while True:
+        try:
+            cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+            display_data()
+            cv2.imshow('map', map)
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord('q') or key == 27:
+                cv2.destroyAllWindows()
+                break
+            r.ping()
+        except redis.exceptions.ConnectionError as e:
+            print("retrying connection")
+            cv2.putText(map, "No connection to car", (35, 150), font, 1, (0,0,255), 3)
+            continue
+        else:
+            break
+    print("connected")
+    connected_to_redis = True
 
-    cv2.namedWindow('map', cv2.WINDOW_NORMAL)
-    cv2.imshow('map', map)
-    time.sleep(map_refresh)
-    key = cv2.waitKey(1)
-    if key & 0xFF == ord('q') or key == 27:
-        cv2.destroyAllWindows()
-        break
+connected_to_redis = False
+def display():
+    global connected_to_redis
+    while True:            
+        try:
+            update_data()
+            print("here")
+            cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+            display_data()
+            cv2.imshow('map', map) 
+            if not connected_to_redis:
+                try_to_connect()
+            time.sleep(map_refresh)
+        except redis.exceptions.ConnectionError as e:
+            try_to_connect()    
+
+x = Thread(target=display, args=())

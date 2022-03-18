@@ -1,3 +1,4 @@
+from logging import getLogRecordFactory
 import numpy as np
 import cv2
 import time
@@ -41,6 +42,10 @@ pipelineT265 = rs.pipeline()
 configT265 = rs.config()
 configT265.enable_device('908412110993') 
 configT265.enable_stream(rs.stream.pose)
+
+configT265.enable_stream(rs.stream.fisheye, 1)
+configT265.enable_stream(rs.stream.fisheye, 2)
+
 deviceT265 = configT265.resolve(pipelineT265).get_device()
 pose_sensor = deviceT265.first_pose_sensor()
 pose_sensor.set_option(rs.option.enable_map_preservation, 1)
@@ -49,7 +54,10 @@ pose_sensor.set_option(rs.option.enable_pose_jumping, 1)
 pose_sensor.set_option(rs.option.enable_mapping, 1)
 
 
+
 pipelineT265.start(configT265)
+profileT265 = pipelineT265.get_active_profile()
+
 
 pipelineD435 = rs.pipeline()
 configD435 = rs.config()
@@ -61,7 +69,7 @@ configD435.enable_stream(rs.stream.color, realsense_color_W, realsense_color_H, 
 pipeline_wrapper = rs.pipeline_wrapper(pipelineD435)
 pipeline_profile = configD435.resolve(pipeline_wrapper)
 device = pipeline_profile.get_device()
-device_product_line = str(device.get_info(rs.camera_info.product_line))
+#device_product_line = str(device.get_info(rs.camera_info.product_line))
 
 found_rgb = False
 for s in device.sensors:
@@ -71,24 +79,23 @@ for s in device.sensors:
 if not found_rgb:
     exit(0)
 
-profile = pipelineD435.start(configD435)
+profileD435 = pipelineD435.start(configD435)
 
-depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+depth_scale = profileD435.get_device().first_depth_sensor().get_depth_scale()
 depth_min = 0.2 #meter
 depth_max = 10.0 #meter
 
-stream_profile_depth = profile.get_stream(rs.stream.depth)
+stream_profile_fish = profileT265.get_stream(rs.stream.fisheye, 1)
+intrinsics_fish = stream_profile_fish.as_video_stream_profile().get_intrinsics()
+
+stream_profile_depth = profileD435.get_stream(rs.stream.depth)
 intrinsics_depth = stream_profile_depth.as_video_stream_profile().get_intrinsics()
 
-stream_profile_color = profile.get_stream(rs.stream.color)
+stream_profile_color = profileD435.get_stream(rs.stream.color)
 intrinsics_color = stream_profile_color.as_video_stream_profile().get_intrinsics()
 
-depth_to_color_extrinsics =  profile.get_stream(rs.stream.depth).as_video_stream_profile().get_extrinsics_to( profile.get_stream(rs.stream.color))
-color_to_depth_extrinsics =  profile.get_stream(rs.stream.color).as_video_stream_profile().get_extrinsics_to( profile.get_stream(rs.stream.depth))
-
-
-#align_to = rs.stream.color
-#align = rs.align(align_to)
+depth_to_color_extrinsics =  profileD435.get_stream(rs.stream.depth).as_video_stream_profile().get_extrinsics_to(profileD435.get_stream(rs.stream.color))
+color_to_depth_extrinsics =  profileD435.get_stream(rs.stream.color).as_video_stream_profile().get_extrinsics_to(profileD435.get_stream(rs.stream.depth))
 
 depth_frame = None
 
@@ -110,12 +117,22 @@ def rotate_and_move_map(map, angle, up, right):
     result = cv2.warpAffine(result_rot, move_mat, (result_rot.shape[1], result_rot.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(100,100,100))
     return result
 
-def color_pixel_to_depth_pixel(x,y):
+def color_pixel_to_depth_pixel(x, y, cam):
+    if cam == "D435":
+        intrinsics_detect = intrinsics_color
+    else:
+        intrinsics_detect = intrinsics_fish
     depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
         depth_frame.get_data(), depth_scale, depth_min, depth_max, 
-        intrinsics_depth, intrinsics_color, depth_to_color_extrinsics, 
+        intrinsics_depth, intrinsics_detect, depth_to_color_extrinsics, 
         color_to_depth_extrinsics, [x,y])
+    if depthx > realsense_depth_W: #somehow the number sometimes goes into the > 10e+30 range
+        depthx = realsense_depth_W - 1
+    if depthy > realsense_depth_H:
+        depthy = realsense_depth_H - 1
+    print(depthx, depthy)
     return depthx, depthy
+#I use depth_to_color_extrinsics and color_to_depth_extrinsics also as extrinsics for the fisheye cam. It's not correct, but the error doesn't matter for my application  
 
 
 def pixel_to_car_coord(x, y):
@@ -137,6 +154,7 @@ def car_coord_to_world_coord(x, y, z):
 map = np.full((mapW,mapH,1),100, np.uint8)
 yaw = 0
 last_time_clear_map = time.time()
+last_time_clear_visible_cone = time.time()
 car_in_world_coord_z = 0
 car_in_world_coord_x = 0
 start_time=time.time()
@@ -145,7 +163,8 @@ yaw_temp = 0
 car_in_world_coord_x_temp = 0
 car_in_world_coord_y_temp = 0
 car_in_world_coord_z_temp = 0
-app_start_time=time.time()
+app_start_time = time.time()
+last_detect = time.time()
 try:
     while True:
         start_time=time.time()
@@ -214,15 +233,18 @@ try:
         rotation_yaw = R.from_rotvec(yaw * np.array([0, 1, 0]), degrees=True).as_matrix()
         world_coord_rotation = np.matmul(rotation, rotation_yaw)
 
-        color_frame = framesD435.get_color_frame()
+        color_frame_D435 = framesD435.get_color_frame()
         #color_frame = framesD435.get_infrared_frame(1)
+        frame_T265 = framesT265.get_fisheye_frame(1)
         depth_frame = framesD435.get_depth_frame()
 
-        if not color_frame or not depth_frame:
+        if not frame_T265 or not depth_frame:
             continue
 
-        color_image = np.asanyarray(color_frame.get_data())
-        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        
+        color_image_D435 = np.asanyarray(color_frame_D435.get_data())
+        gray_D435 = cv2.cvtColor(color_image_D435, cv2.COLOR_BGR2GRAY)
+
         last_time_3d_image = time.time()
         
         yaw_increment = yaw - yaw_previous
@@ -233,9 +255,13 @@ try:
         visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
         visible_cone = visible_cone.reshape((-1, 1, 2))
         if time.time() - last_time_clear_map > 3: #map is cleared every 3 seconds to avoid old data
-            #cv2.fillPoly(map, [visible_cone], (100,100,100))
             map = np.full((mapW,mapH,1),100, np.uint8)
             last_time_clear_map=time.time()
+
+        if time.time() - last_time_clear_visible_cone > 0.5: #visible cone is cleared every 0.5 seconds to ensure moving obstacles are not considered
+            cv2.fillPoly(map, [visible_cone], 100)
+            last_time_clear_visible_cone=time.time()
+
 
         cv2.rectangle(map, (188,230),(212,241), 100, -1) #clear area directly in front of car to avoid wrong information
         for x in range(0, realsense_depth_W, 50): #70
@@ -253,17 +279,38 @@ try:
                     continue
                 cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
             
+        detected = False
+
+        for result_D435 in detector.detect(gray_D435):
+            x,y = result_D435.center
+            x,y = color_pixel_to_depth_pixel(x, y, "D435")
+            r.psetex('log_detect_cam', 3000, "D435") 
+            detected = True
         
-        for result in detector.detect(gray):
-            x,y = result.center
-            x,y = color_pixel_to_depth_pixel(x, y)
+        if not detected:
+            ttttt = time.time()
+            gray_T265 = np.asanyarray(frame_T265.get_data())
+            gray_T265 = cv2.resize(gray_T265, (424, 400))
+            for result in detector.detect(gray_T265):
+                x,y = result.center
+                x = x *2
+                y = y *2
+                x,y = color_pixel_to_depth_pixel(x, y, "T265")
+                r.psetex('log_detect_cam', 3000, "T265") 
+                detected = True
+            #print("adsfasdofhasdofhasdofihsadfsa", time.time()-ttttt)
+
+        last_detect = time.time()
+        if detected:    
             cx, cy, cz = pixel_to_car_coord(int(x),int(y))
             cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
             target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
             target_world_coords_bytes = struct.pack('%sf' %3,* [cwx, cwy, cwz])
             r.psetex('target_world_coords', 3000, target_world_coords_bytes) #target coordinates expire after xx milliseconds
             r.psetex('target_car_coords', 3000, target_coords_bytes) #target coordinates expire after xx milliseconds
+
         
+        detected = False
         map_to_redis(r,map,'map')
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
