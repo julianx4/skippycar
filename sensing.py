@@ -264,7 +264,7 @@ try:
             car_in_world_coord_y = data.translation.y + car_in_world_coord_y_temp
             car_in_world_coord_z = -data.translation.z + car_in_world_coord_z_temp
 
-            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.3; #1.3 degree misalignment between T265 tracking camera and D435 depth camera
+            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.95; #1.3 degree misalignment between T265 tracking camera and D435 depth camera
             roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
             yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi + yaw_temp
             if time.time() - last_time_pipe_restart > 30 and pi4:
@@ -371,29 +371,36 @@ try:
         detected = False
 
         for x in range(0, realsense_depth_W, depth_pixel_horizontal_raster): #70
-            for y in range (0, int(realsense_depth_H), depth_pixel_vertical_raster): #15
+            for y in range (0, realsense_depth_H, depth_pixel_vertical_raster): #15
                 cx, cy, cz = pixel_to_car_coord(x, y)
                 if cy > ignore_above_height:					#ignore obstacles above car height
                     continue
-                #
-                #print(cx, cy, cz)
-                obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(intrinsics_color, [cx, cy + camera_height, cz + 0.01])
-                obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(intrinsics_color, [cx, camera_height, cz + 0.01])
-                #print(obstacle_bottom_x, obstacle_bottom_y, obstacle_top_x, obstacle_top_y)
-                obstacle_bottom_x = int(obstacle_bottom_x)
-                obstacle_top_x = int(obstacle_top_x)
-                obstacle_bottom_y = int(obstacle_bottom_y)
-                obstacle_top_y = int(obstacle_top_y)
 
-                cv2.line(color_image_D435, (obstacle_top_x, obstacle_top_y), (obstacle_bottom_x, obstacle_bottom_y), (0,0,255), thickness=3)
                 ### map 4x4m
-                mx = int(cx * 100 + (mapW / 2) - 1.5) #3cm correction of camera position off center
+                mx = int(cx * 100 + (mapW / 2) - 3) #3cm correction of camera position off center
                 my = int((mapH - cz * 100) - 150) #car is 150cm from bottom of the map
     
                 c = int(100 + cy * 100) # 100 is 0cm resolution 1cm
                 if c < 0 or c > 255:
                     continue
                 cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
+
+
+                h = time.time()%1
+                #obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([h, -(0.1-camera_height), 1], rotation_pitch))
+                #obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([h, camera_height, 1], rotation_pitch))
+                if cy < 0.02 or cz == 0:
+                    continue
+                obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, -(cy-camera_height), cz + 0.01], rotation_pitch))                
+                obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height, cz + 0.01], rotation_pitch))
+                #print(obstacle_bottom_x, obstacle_bottom_y, obstacle_top_x, obstacle_top_y)
+                obstacle_bottom_x = int(obstacle_bottom_x)
+                obstacle_top_x = int(obstacle_top_x)
+                obstacle_bottom_y = int(obstacle_bottom_y)
+                obstacle_top_y = int(obstacle_top_y)
+
+                cv2.line(color_image_D435, (obstacle_top_x, obstacle_top_y), (obstacle_bottom_x, obstacle_bottom_y), (0,0,255-min(cz * 100,255)), thickness=10)
+
             
 
 
