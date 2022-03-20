@@ -6,6 +6,17 @@ import time
 import curved_paths_coords as pc
 
 r = redis.Redis(host='localhost', port=6379, db=0)
+#controllable variables
+def rget_and_float(name, default = None):
+    output = r.get(name)
+    if output == None:
+        return default
+    else:
+        return float(output)
+
+square_range = int(rget_and_float('square_range', 6))
+#----
+
 
 mapW = 400
 mapH = 400
@@ -14,7 +25,7 @@ last_time=0
 
 font = cv2.FONT_HERSHEY_SIMPLEX
 
-map_refresh = 0.1 # interval between map refresh
+map_refresh = 0.2 # interval between map refresh
 
 map = np.full((mapW,mapH,3),100, np.uint8)
 
@@ -28,7 +39,8 @@ def redis_to_map(redis,name):
         array = cv2.cvtColor(array,cv2.COLOR_GRAY2RGB)
         return array
 
-while True:
+def create_map():
+    square_range = int(rget_and_float('square_range', 6))
     log_sensing_time_received = r.get('log_sensing_time')
     if log_sensing_time_received is not None:
         log_sensing_time = round(float(log_sensing_time_received),2)
@@ -141,7 +153,7 @@ while True:
         else:
             path_lookup = path
             l = 1
-        for square in range(0, 4):
+        for square in range(0, square_range):
             #print(path,square)
             x0 = int(l * pc.paths[path_lookup]['coords'][square][0] / 10 + mapW / 2)
             y0 = mapH - int(pc.paths[path_lookup]['coords'][square][1] / 10 + 150)
@@ -214,12 +226,33 @@ while True:
     for text in logs_right:
         count +=1
         cv2.putText(map, str(text), (310, 300 + 10 * count), font, 0.4, (255,255,255), 1)
+    return map
 
 
-    cv2.namedWindow('map', cv2.WINDOW_NORMAL)
-    cv2.imshow('map', map)
-    time.sleep(map_refresh)
-    key = cv2.waitKey(1)
-    if key & 0xFF == ord('q') or key == 27:
-        cv2.destroyAllWindows()
-        break
+
+if __name__ == "__main__":
+    while True:
+        map = create_map()
+        cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+        cv2.imshow('map', map)
+        time.sleep(map_refresh)
+        key = cv2.waitKey(1)
+        if key & 0xFF == ord('q') or key == 27:
+            cv2.destroyAllWindows()
+            break
+else:
+    from flask import Response, Flask
+    app = Flask(__name__)
+
+    def gen_frames():  
+        while True:
+            frame = create_map()  # read the camera frame
+
+            _, buffer = cv2.imencode('.jpg', frame,[int(cv2.IMWRITE_JPEG_QUALITY), 50])
+            frame = buffer.tobytes()
+            yield (b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  # concat frame one by one and show result
+            time.sleep(map_refresh) 
+    @app.route('/video_feed')
+    def video_feed():
+        return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')

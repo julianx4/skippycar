@@ -8,6 +8,22 @@ from adafruit_servokit import ServoKit
 r = redis.Redis(host='localhost', port=6379, db=0)
 kit = ServoKit(channels=16)
 
+#controllable variables
+def rget_and_float(name, default = None):
+    output = r.get(name)
+    if output == None:
+        return default
+    else:
+        return float(output)
+
+rear_diff_locked = int(rget_and_float('rear_diff_locked', 1))
+front_diff_locked = int(rget_and_float('front_diff_locked', 1))
+gear = int(rget_and_float('gear', 1))
+low_battery_voltage = rget_and_float('low_battery_voltage', 3.5)
+
+#----
+
+
 speed_cap = 45 #percentage of max speed
 #steering angle 30 - 150
 
@@ -22,18 +38,12 @@ frontdiff_pin = 11
 reardiff_pin = 13
 gearbox_pin = 12
 
-gear1 = 60
-gear2 = 110
+gear_servo_pos = [0, 60, 110]
 
-rear_diff_open = 78
-rear_diff_closed = 15
+rear_diff_servo_pos = [78, 15] #0 locked, 1 open
 
-front_diff_closed = 120
-front_diff_open = 55
+front_diff_servo_pos = [120, 55] #0 locked, 1 open
 
-kit.servo[gearbox_pin].angle = gear1
-kit.servo[reardiff_pin].angle = rear_diff_closed
-kit.servo[frontdiff_pin].angle = front_diff_closed
 
 def steering_angle(angle):
     if angle > 55:
@@ -52,17 +62,26 @@ def driving_speed_signal(speed):
 driving = True
 in_motion_start = time.time()
 while driving:
+    rear_diff_locked = int(rget_and_float('rear_diff_locked', 1))
+    front_diff_locked = int(rget_and_float('front_diff_locked', 1))
+    gear = int(rget_and_float('gear', 1))
+
+    kit.servo[gearbox_pin].angle = gear_servo_pos[gear]
+    kit.servo[reardiff_pin].angle = rear_diff_servo_pos[rear_diff_locked]
+    kit.servo[frontdiff_pin].angle = front_diff_servo_pos[front_diff_locked]
+
+    low_battery_voltage = rget_and_float('low_battery_voltage', 3.5)
     voltages_received = r.get('voltages')
     if voltages_received is None:
         print("no battery info")
         break
     else:
         voltages = np.array(struct.unpack('%sf' %2, voltages_received))
-    if voltages.min() < 3.5:
+    if voltages.min() < low_battery_voltage:
         print(voltages.min())
         break
 
-    target_speed = r.get('speed')
+    target_speed = r.get('target_speed')
     current_speed_received = r.get('current_speed')
     
     if current_speed_received is not None:

@@ -9,6 +9,26 @@ from scipy.spatial.transform import Rotation as R
 
 r = redis.Redis(host='localhost', port=6379, db=0)
 
+#controllable variables
+
+def rget_and_float(name, default = None):
+    output = r.get(name)
+    if output == None:
+        return default
+    else:
+        return float(output)
+
+angle_deviation_cost_factor = rget_and_float('angle_deviation_cost_factor', 2)
+driving_speed = rget_and_float('driving_speed', 30)
+max_climb_height = rget_and_float('max_climb_height', 10)
+min_speed = rget_and_float('min_speed', 0.05)
+min_speed_increase_factor = rget_and_float('min_speed_increase_factor', 1.5)
+square_range = int(rget_and_float('square_range', 6))
+obstacle_stop_height = rget_and_float('obstacle_stop_height', 15)
+target_stop_distance = rget_and_float('target_stop_distance', 0.9)
+square_to_square_cost_factor = rget_and_float('square_to_square_cost_factor', 10)
+#----
+
 distance = 0
 
 yaw_zero = 0
@@ -25,7 +45,7 @@ rotation_yaw_world_to_car = R.from_rotvec(-0 * np.array([0, 1, 0]), degrees=True
 mapW=400
 mapH=400
 
-max_climb_height = 10
+target_speed = None
 
 def redis_to_map(redis,name):
     encoded = redis.get(name)
@@ -62,7 +82,15 @@ def angle_and_distance_to_target():
 
 while True:
     starttime = time.time()
-    
+    angle_deviation_cost_factor = rget_and_float('angle_deviation_cost_factor', 2)
+    driving_speed = rget_and_float('driving_speed', 30)
+    max_climb_height = rget_and_float('max_climb_height', 10)
+    min_speed = rget_and_float('min_speed', 0.05)
+    min_speed_increase_factor = rget_and_float('min_speed_increase_factor', 1.5)
+    square_range = int(rget_and_float('square_range', 6))
+    obstacle_stop_height = rget_and_float('obstacle_stop_height', 15)
+    target_stop_distance = rget_and_float('target_stop_distance', 0.9)
+    square_to_square_cost_factor = rget_and_float('square_to_square_cost_factor', 10)
     map=redis_to_map(r,"map")
     path_costs = [[],[],[],[],[],[],[],[],[],[],[]]
     
@@ -98,9 +126,9 @@ while True:
             square_to_square_cost = 0
             max_height = 0
             
-            angle_cost = abs(target_angle - angle) * 2
+            angle_cost = abs(target_angle - angle) * angle_deviation_cost_factor
             
-            for square in range(0, 6):
+            for square in range(0, square_range):
                 #print(path,square)
                 
                 x0 = int(l * pc.paths[path_lookup]['coords'][square][0] / 10 + mapW / 2)
@@ -142,7 +170,7 @@ while True:
                     if abs(max_height - max_height_previous_step) > max_climb_height:
                         square_to_square_cost += 1000
                     else:
-                        square_to_square_cost += abs(max_height - max_height_previous_step) * 10
+                        square_to_square_cost += abs(max_height - max_height_previous_step) * square_to_square_cost_factor
             
             total_cost = height_difference_cost + angle_cost + square_to_square_cost
             path_costs[path] = total_cost
@@ -152,24 +180,37 @@ while True:
         current_path = path_costs.index(minpathcost)
         #print("current path", current_path, minpathcost)
 
-        if min(path_costs) > 1000 or in_front_of_car > 15 or distance < 0.9:
+        if min(path_costs) > 1000 or in_front_of_car > obstacle_stop_height or distance < target_stop_distance:
             #print("stopping: obstacle", in_front_of_car, "distance to target",distance, "min path cost",minpathcost)
-            r.set('speed', 0)
+            r.set('target_speed', 0)
+            target_speed = None
 
         else:
             r.psetex('path', 1000, current_path)
-            r.psetex('speed', 1000, 30)
+
+            current_speed_received = r.get('current_speed')
+
+            if current_speed_received is not None:
+                current_speed = float(current_speed_received)
+
+            if target_speed is None:
+                #print("no driving input received")
+                in_motion_start = time.time()
+
+            if current_speed < min_speed and time.time() - in_motion_start > 2:
+                #print("driving faster")
+                r.psetex('target_speed', 1000, driving_speed * min_speed_increase_factor)
+            else:
+                #print("driving normal speed")
+                r.psetex('target_speed', 1000, driving_speed)
             if current_path > 5:
                 path_lookup = current_path - 5
                 steering_angle = -pc.paths[path_lookup]['steering_angle']
             else:
                 path_lookup = current_path
                 steering_angle = pc.paths[path_lookup]['steering_angle']
-            #print("steering angle", steering_angle)
+
             r.psetex('angle', 1000, steering_angle)
 
     r.psetex('log_navigation_running', 1000, "on")
     time.sleep(0.1)
-
-
-
