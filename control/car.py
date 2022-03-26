@@ -5,6 +5,14 @@ import redis
 app = Flask(__name__)
 r = redis.Redis()
 
+def rget_and_float(name, default = None):
+    output = r.get(name)
+    if output == None:
+        return default
+    else:
+        return float(output)
+tap_target_memory_time = int(rget_and_float('tap_target_memory_time', 1000))
+
 variables = []
 log_values_dict = {}
 log_titles = [
@@ -49,7 +57,7 @@ def api_value():
 def api_timed_value():
     value = request.json['value']
     name = request.json['name']
-    time = request.json['time']
+    time = tap_target_memory_time
     r.psetex(name, int(time), int(value))
     return ''
     

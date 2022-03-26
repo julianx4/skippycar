@@ -32,6 +32,8 @@ def rget_and_float(name, default = None):
         return float(output)
 
 target_memory_time = int(rget_and_float('target_memory_time', 1000))
+tap_target_memory_time = int(rget_and_float('tap_target_memory_time', 1000))
+map_base_height = int(rget_and_float('map_base_height', 100))
 map_clear_all_interval = rget_and_float('map_clear_all_interval', 3)
 map_clear_visible_cone_interval = rget_and_float('map_clear_visible_cone_interval', 0.5)
 depth_pixel_horizontal_raster = int(rget_and_float('depth_pixel_horizontal_raster', 50))
@@ -135,8 +137,8 @@ def rotate_and_move_map(map, angle, up, right):
     move_mat = np.float32([
 	[1, 0, right],
 	[0, 1, up]])
-    result_rot = cv2.warpAffine(map, rot_mat, map.shape[1::-1], flags=cv2.INTER_LINEAR, borderValue=(100,100,100))
-    result = cv2.warpAffine(result_rot, move_mat, (result_rot.shape[1], result_rot.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(100,100,100))
+    result_rot = cv2.warpAffine(map, rot_mat, map.shape[1::-1], flags=cv2.INTER_LINEAR, borderValue=(map_base_height,map_base_height,map_base_height))
+    result = cv2.warpAffine(result_rot, move_mat, (result_rot.shape[1], result_rot.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(map_base_height,map_base_height,map_base_height))
     return result
 
 def color_pixel_to_depth_pixel(x, y, cam):
@@ -263,7 +265,7 @@ def draw_path_on_image(image):
         poly = poly.reshape((-1, 1, 2))
         cv2.polylines(image,[poly],True,(255,255,255),2)
 
-map = np.full((mapW,mapH,1),100, np.uint8)
+map = np.full((mapW,mapH,1), map_base_height, np.uint8)
 yaw = 0
 last_time_clear_map = time.time()
 last_time_clear_visible_cone = time.time()
@@ -279,7 +281,9 @@ app_start_time = time.time()
 last_detect = time.time()
 try:
     while True:
+        tap_target_memory_time = int(rget_and_float('tap_target_memory_time', 1000))
         target_memory_time = int(rget_and_float('target_memory_time', 1000))
+        map_base_height = int(rget_and_float('map_base_height', 100))
         map_clear_all_interval = rget_and_float('map_clear_all_interval', 3)
         map_clear_visible_cone_interval = rget_and_float('map_clear_visible_cone_interval', 0.5)
         depth_pixel_horizontal_raster = int(rget_and_float('depth_pixel_horizontal_raster', 50))
@@ -333,7 +337,7 @@ try:
                 configT265.enable_stream(rs.stream.pose)
                 pipelineT265.start(configT265)
                 last_time_pipe_restart = time.time()                
-                map = np.full((mapW,mapH,1),100, np.uint8)
+                map = np.full((mapW,mapH,1),map_base_height, np.uint8)
                 print("T265 restarted in " , str(time.time()-before_restart) , " seconds")
             #print(pitch)
         else:
@@ -380,17 +384,24 @@ try:
         visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
         visible_cone = visible_cone.reshape((-1, 1, 2))
         if time.time() - last_time_clear_map > map_clear_all_interval: #map is cleared every x seconds to avoid old data
-            map = np.full((mapW,mapH,1),100, np.uint8)
+            map = np.full((mapW,mapH,1),map_base_height, np.uint8)
             last_time_clear_map=time.time()
 
         if time.time() - last_time_clear_visible_cone > map_clear_visible_cone_interval: #visible cone is cleared every x seconds to ensure moving obstacles are not considered
-            cv2.fillPoly(map, [visible_cone], 100)
+            cv2.fillPoly(map, [visible_cone], map_base_height)
             last_time_clear_visible_cone=time.time()
 
 
         cv2.rectangle(map, (188,230),(212,241), 100, -1) #clear area directly in front of car to avoid wrong information
 
         detected = False
+        tap_coord_X = r.get("tap_coord_X")
+        tap_coord_Y = r.get("tap_coord_Y")
+        tap_target = False
+        if tap_coord_X is not None:
+            detected = True
+            tap_target = True
+            tap_coord_X, tap_coord_Y = color_pixel_to_depth_pixel(int(tap_coord_X), int(tap_coord_Y), "D435")
 
         for result_D435 in detector.detect(gray_D435):
             x,y = result_D435.center
@@ -421,33 +432,28 @@ try:
 
         last_detect = time.time()
         if detected:    
-            cx, cy, cz = pixel_to_car_coord(int(x),int(y))
-            cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
+            if not tap_target:
+                cx, cy, cz = pixel_to_car_coord(int(x),int(y))
+                cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
+            else:
+                cx, cy, cz = pixel_to_car_coord(int(tap_coord_X),int(tap_coord_Y))
+                cwx, cwy, cwz = car_coord_to_world_coord(cx, cy, cz)
+                target_memory_time = tap_target_memory_time
+
             target_coords_bytes = struct.pack('%sf' %3,* [cx, cy, cz])
             target_world_coords_bytes = struct.pack('%sf' %3,* [cwx, cwy, cwz])
+            tagx, tagy = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height - cy, cz], rotation))
             r.psetex('target_world_coords', target_memory_time, target_world_coords_bytes) #target coordinates expire after xx milliseconds
             r.psetex('target_car_coords', target_memory_time, target_coords_bytes) #target coordinates expire after xx milliseconds
-            #print(x, y, cz)
-            tagx, tagy = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height - cy, cz], rotation))
-            #print(tagy, tagy)
             tag_floor_x, tag_floor_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height, cz], rotation))
             zero_car_x, zero_car_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([0, camera_height, 0.10], rotation))
-
             cv2.circle(color_image_D435, (int(tagx),int(tagy)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
             cv2.circle(color_image_D435, (int(tag_floor_x),int(tag_floor_y)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
             cv2.line(color_image_D435, (int(tag_floor_x), int(tag_floor_y)), (int(tagx), int(tagy)), (255,0,0), thickness = 2) 
             cv2.line(color_image_D435, (int(zero_car_x), int(zero_car_y)), (int(tag_floor_x), int(tag_floor_y)), (255,0,0), thickness = 5)
         detected = False
 
-        tap_coord_X = r.get("tap_coord_X")
-        tap_coord_Y = r.get("tap_coord_Y")
-        
-        if tap_coord_X is not None:
-            tcx, tcy, tcz = pixel_to_car_coord(int(tap_coord_X),int(tap_coord_Y))
-            tcwx, tcwy, tcwz = car_coord_to_world_coord(tcx, tcy, tcz)
-            tap_target_world_coords_bytes = struct.pack('%sf' %3,* [tcwx, tcwy, tcwz])
-            r.psetex('target_world_coords', target_memory_time, tap_target_world_coords_bytes)
-            print(tcwx, tcwy, tcwz)
+
 
         for x in range(0, realsense_depth_W, depth_pixel_horizontal_raster): #70
             for y in range (int(realsense_depth_H/3), int(realsense_depth_H), depth_pixel_vertical_raster): #15

@@ -15,6 +15,7 @@ def rget_and_float(name, default = None):
         return float(output)
 
 square_range = int(rget_and_float('square_range', 6))
+map_base_height = int(rget_and_float('map_base_height', 100))
 #----
 
 
@@ -27,12 +28,12 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 
 map_refresh = 0.2 # interval between map refresh
 
-map = np.full((mapW,mapH,3),100, np.uint8)
+map = np.full((mapW,mapH,3),map_base_height, np.uint8)
 
 def redis_to_map(redis,name):
     encoded = redis.get(name)
     if encoded is None:
-        return np.full((mapW,mapH,3),100, np.uint8)
+        return np.full((mapW,mapH,3),map_base_height, np.uint8)
     else:
         h, w = struct.unpack('>II', encoded[:8])
         array = np.frombuffer(encoded, dtype=np.uint8, offset=8).reshape(h, w, 1)
@@ -41,7 +42,7 @@ def redis_to_map(redis,name):
 
 def create_map():
     square_range = int(rget_and_float('square_range', 6))
-
+    map_base_height = int(rget_and_float('map_base_height', 100))
 
     log_sensing_time = round(float(r.get('log_sensing_time') or 0), 2)
 

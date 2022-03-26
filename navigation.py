@@ -28,6 +28,7 @@ square_range = int(rget_and_float('square_range', 6))
 obstacle_stop_height = rget_and_float('obstacle_stop_height', 15)
 target_stop_distance = rget_and_float('target_stop_distance', 0.9)
 square_to_square_cost_factor = rget_and_float('square_to_square_cost_factor', 10)
+map_base_height = int(rget_and_float('map_base_height', 100))
 #----
 
 distance = 0
@@ -51,7 +52,7 @@ target_speed = None
 def redis_to_map(redis,name):
     encoded = redis.get(name)
     if encoded is None:
-        return np.full((mapW,mapH,1),100, np.uint8)
+        return np.full((mapW, mapH, 1), map_base_height, np.uint8)
     else:
         h, w = struct.unpack('>II', encoded[:8])
         received_array = np.frombuffer(encoded, dtype=np.uint8, offset=8).reshape(h, w, 1)
@@ -100,6 +101,7 @@ while True:
     obstacle_stop_height = rget_and_float('obstacle_stop_height', 15)
     target_stop_distance = rget_and_float('target_stop_distance', 0.9)
     square_to_square_cost_factor = rget_and_float('square_to_square_cost_factor', 10)
+    map_base_height = int(rget_and_float('map_base_height', 100))
     map=redis_to_map(r,"map")
     path_costs = [[],[],[],[],[],[],[],[],[],[],[]]
     path_angle_costs = [[],[],[],[],[],[],[],[],[],[],[]]
@@ -158,24 +160,24 @@ while True:
                 mask = np.zeros(map.shape, dtype=np.uint8)
                 cv2.fillPoly(mask,[poly],(255,255,255))
                 crop = cv2.bitwise_and(map,mask)
-                bg = np.ones_like(crop, np.uint8)*100
+                bg = np.ones_like(crop, np.uint8) * map_base_height
                 bgmask= cv2.bitwise_not(mask)
                 bg = cv2.bitwise_and(bg,bgmask)
                 crop = crop + bg
+                #print(crop)
 
 
                 min_height = crop.min() - 100
                 max_height_previous_step = max_height
                 max_height = crop.max() - 100
-
+               
                 path_height[path].append(max_height)
 
-                if square > 4:
+                if square > 3:
                     height_difference_cost += (max_height - min_height) / 4
                     square_to_square_cost += (abs(max_height - max_height_previous_step)) / 4
                 
                 else:
-
                     if abs(max_height - max_height_previous_step) > max_climb_height:
                         square_to_square_cost += 1000
                     else:

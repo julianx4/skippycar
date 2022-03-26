@@ -130,7 +130,7 @@ app.component('skippy-car', {
         body: JSON.stringify({
           name: 'tap_coord_X',
           value: coordX,
-          time: 2000
+          time: 2000 // this needs to be removed, as it was replaced in car.py
         })
       });
       fetch('/timed_value', {
@@ -139,7 +139,8 @@ app.component('skippy-car', {
         body: JSON.stringify({
           name: 'tap_coord_Y',
           value: coordY,
-          time: 2000
+          time: 2000 // this needs to be removed, as it was replaced in car.py
+          
         })
       })
     },
