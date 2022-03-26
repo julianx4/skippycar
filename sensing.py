@@ -38,7 +38,9 @@ depth_pixel_horizontal_raster = int(rget_and_float('depth_pixel_horizontal_raste
 depth_pixel_vertical_raster = int(rget_and_float('depth_pixel_vertical_raster', 10))
 ignore_above_height = rget_and_float('ignore_above_height', 0.4)
 square_range = int(rget_and_float('square_range', 6))
-
+draw_grid = int(rget_and_float('draw_grid', 1))
+draw_obstacles = int(rget_and_float('draw_obstacles', 1))
+max_climb_height = rget_and_float('max_climb_height', 10)
 #----
 
 realsense_depth_W = 640
@@ -51,9 +53,11 @@ realsense_color_H = 360
 mapW = 400
 mapH = 400
 
+font = cv2.FONT_HERSHEY_SIMPLEX
+
 pi4 = False
 
-camera_height = 0.25 #mounting height of the depth camera vs. ground
+camera_height = 0.23 #mounting height of the depth camera vs. ground
 
 detector = apriltag.Detector()
 
@@ -140,10 +144,21 @@ def color_pixel_to_depth_pixel(x, y, cam):
         intrinsics_detect = intrinsics_color
     else:
         intrinsics_detect = intrinsics_fish
+        if x > 649:
+            x = 649
+        if x < 189:
+            x = 189
+        if y < 255:
+            y = 255
+        
     depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
         depth_frame.get_data(), depth_scale, depth_min, depth_max, 
         intrinsics_depth, intrinsics_detect, depth_to_color_extrinsics, 
         color_to_depth_extrinsics, [x,y])
+    #if cam != "D435":
+    #    print("depth: ", depthx, depthy)
+    #    print("color: ", x,y)
+
     if depthx > realsense_depth_W: #somehow the number sometimes goes into the > 10e+30 range
         depthx = realsense_depth_W - 1
     if depthy > realsense_depth_H:
@@ -158,7 +173,7 @@ def pixel_to_car_coord(x, y):
     cx,cy,cz = rs.rs2_deproject_pixel_to_point(intrinsics_depth, [x, y], dist)
     c=np.array([cx,cy,cz])
     cx,cy,cz=np.matmul(rotation,c)
-    cy = camera_height - cy
+    cy = camera_height - cy #car_coords are floor level
     return cx, cy, cz
 
 def car_coord_to_world_coord(x, y, z):
@@ -168,6 +183,19 @@ def car_coord_to_world_coord(x, y, z):
     cy = car_in_world_coord_y + cy
     cz = car_in_world_coord_z + cz
     return cx, cy, cz
+
+def draw_path_costs_on_image(image):
+    for path in range(0, 11):
+        path_cost = rget_and_float('path_cost'+str(path), 0)
+        if path > 5:
+            path_lookup = path - 5
+            l = -1
+        else:
+            path_lookup = path
+            l = 1
+        #print('path_cost'+str(path), " ", path_cost)
+        
+        cv2.putText(image, str(int(path_cost)), (300 + 50 * l * path_lookup, 140), font, 0.4, (255,255,255), 1)
 
 def draw_path_on_image(image):
     path_received = r.get('path')
@@ -183,7 +211,25 @@ def draw_path_on_image(image):
     else:
         path_lookup = path
         l = 1
+
+    x0_previous = pc.paths[0]['coords'][0][0] / 1000
+    y0_previous = pc.paths[0]['coords'][0][1] / 1000
+    x1_previous = pc.paths[0]['coords'][0][2] / 1000
+    y1_previous = pc.paths[0]['coords'][0][3] / 1000    
+    
+    
+    x0_previous, y0_previous = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x0_previous, camera_height, y0_previous], rotation))
+    x1_previous, y1_previous = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x1_previous, camera_height, y1_previous], rotation))
+    
+    x0_previous = int(x0_previous)
+    x1_previous = int(x1_previous)
+    y0_previous = int(y0_previous)
+    y1_previous = int(y1_previous)
+
     for square in range(0, square_range):
+        square_height = rget_and_float('square_height'+str(square), 0) / 100 #cm to m
+
+
         x0 = l * pc.paths[path_lookup]['coords'][square][0] / 1000
         y0 = pc.paths[path_lookup]['coords'][square][1] / 1000
         x1 = l * pc.paths[path_lookup]['coords'][square][2] / 1000
@@ -193,13 +239,11 @@ def draw_path_on_image(image):
         y2 = pc.paths[path_lookup]['coords'][square + 1][1] / 1000
         x3 = l * pc.paths[path_lookup]['coords'][square + 1][2] / 1000
         y3 = pc.paths[path_lookup]['coords'][square + 1][3] / 1000
-        #print(x0,x1,x2,x3,y0,y1,y2,y3)
 
-        #h = time.time()%1 + 0.1
-        x0,y0 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x0, camera_height, y0], rotation_pitch))
-        x1,y1 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x1, camera_height, y1], rotation_pitch))
-        x2,y2 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x2, camera_height, y2], rotation_pitch))
-        x3,y3 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x3, camera_height, y3], rotation_pitch))
+        x0, y0 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x0, camera_height - square_height, y0], rotation))
+        x1, y1 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x1, camera_height - square_height, y1], rotation))
+        x2, y2 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x2, camera_height - square_height, y2], rotation))
+        x3, y3 = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([x3, camera_height - square_height, y3], rotation))
         x0 = int(x0)
         x1 = int(x1)
         x2 = int(x2)
@@ -209,6 +253,12 @@ def draw_path_on_image(image):
         y2 = int(y2)
         y3 = int(y3)
         
+        cv2.line(image, (x0_previous, y0_previous), (x0, y0), (200, 200, 200), thickness=3)
+        cv2.line(image, (x1_previous, y1_previous), (x1, y1), (200, 200, 200), thickness=3)
+
+        x0_previous, y0_previous = x2, y2
+        x1_previous, y1_previous = x3, y3 
+
         poly = np.array([[x0,y0],[x1,y1],[x3,y3],[x2,y2]])
         poly = poly.reshape((-1, 1, 2))
         cv2.polylines(image,[poly],True,(255,255,255),2)
@@ -236,7 +286,10 @@ try:
         depth_pixel_vertical_raster = int(rget_and_float('depth_pixel_vertical_raster', 10))
         ignore_above_height = rget_and_float('ignore_above_height', 0.4)        
         square_range = int(rget_and_float('square_range', 6))
-        
+        draw_grid = int(rget_and_float('draw_grid', 1))
+        draw_obstacles = int(rget_and_float('draw_obstacles', 1))
+        max_climb_height = rget_and_float('max_climb_height', 10)
+
         start_time=time.time()
         car_in_world_coord_x_previous = car_in_world_coord_x
         car_in_world_coord_z_previous = car_in_world_coord_z
@@ -341,8 +394,10 @@ try:
 
         for result_D435 in detector.detect(gray_D435):
             x,y = result_D435.center
+            #cv2.circle(color_image_D435, (int(x),int(y)), 10, (255,255,0), thickness=2, lineType=8, shift=0)
             x,y = color_pixel_to_depth_pixel(x, y, "D435")
             r.psetex('log_detect_cam', 3000, "D435") 
+            
             detected = True
         
         if not detected:
@@ -351,12 +406,18 @@ try:
             gray_T265 = cv2.resize(gray_T265, (424, 400))
             for result in detector.detect(gray_T265):
                 x,y = result.center
-                x = x *2
-                y = y *2
+                x = x * 2
+                y = y * 2
+ 
+                
+                print("before: ", x,y)
                 x,y = color_pixel_to_depth_pixel(x, y, "T265")
-                r.psetex('log_detect_cam', 3000, "T265") 
-                detected = True
-            #print("adsfasdofhasdofhasdofihsadfsa", time.time()-ttttt)
+                if x > 1 and y > 1:
+                    r.psetex('log_detect_cam', 3000, "T265")
+                    detected = True
+                    print("after: ", x,y)
+                    
+            
 
         last_detect = time.time()
         if detected:    
@@ -366,12 +427,30 @@ try:
             target_world_coords_bytes = struct.pack('%sf' %3,* [cwx, cwy, cwz])
             r.psetex('target_world_coords', target_memory_time, target_world_coords_bytes) #target coordinates expire after xx milliseconds
             r.psetex('target_car_coords', target_memory_time, target_coords_bytes) #target coordinates expire after xx milliseconds
+            #print(x, y, cz)
+            tagx, tagy = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height - cy, cz], rotation))
+            #print(tagy, tagy)
+            tag_floor_x, tag_floor_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height, cz], rotation))
+            zero_car_x, zero_car_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([0, camera_height, 0.10], rotation))
 
-        
+            cv2.circle(color_image_D435, (int(tagx),int(tagy)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
+            cv2.circle(color_image_D435, (int(tag_floor_x),int(tag_floor_y)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
+            cv2.line(color_image_D435, (int(tag_floor_x), int(tag_floor_y)), (int(tagx), int(tagy)), (255,0,0), thickness = 2) 
+            cv2.line(color_image_D435, (int(zero_car_x), int(zero_car_y)), (int(tag_floor_x), int(tag_floor_y)), (255,0,0), thickness = 5)
         detected = False
 
+        tap_coord_X = r.get("tap_coord_X")
+        tap_coord_Y = r.get("tap_coord_Y")
+        
+        if tap_coord_X is not None:
+            tcx, tcy, tcz = pixel_to_car_coord(int(tap_coord_X),int(tap_coord_Y))
+            tcwx, tcwy, tcwz = car_coord_to_world_coord(tcx, tcy, tcz)
+            tap_target_world_coords_bytes = struct.pack('%sf' %3,* [tcwx, tcwy, tcwz])
+            r.psetex('target_world_coords', target_memory_time, tap_target_world_coords_bytes)
+            print(tcwx, tcwy, tcwz)
+
         for x in range(0, realsense_depth_W, depth_pixel_horizontal_raster): #70
-            for y in range (0, realsense_depth_H, depth_pixel_vertical_raster): #15
+            for y in range (int(realsense_depth_H/3), int(realsense_depth_H), depth_pixel_vertical_raster): #15
                 cx, cy, cz = pixel_to_car_coord(x, y)
                 if cy > ignore_above_height:					#ignore obstacles above car height
                     continue
@@ -385,30 +464,76 @@ try:
                     continue
                 cv2.circle(map, (mx,my), 0, (c), thickness=-1, lineType=8, shift=0)
 
+                if draw_obstacles == 1:
+                    line_thickness = 2
+                    if abs(cy) < 0.02 or cz == 0: #
+                        continue
+                    obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, -(cy - camera_height), cz + 0.01], rotation))                
+                    obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height, cz + 0.01], rotation))
+                 
+                    obstacle_bottom_x = int(obstacle_bottom_x)
+                    obstacle_top_x = int(obstacle_top_x)
+                    obstacle_bottom_y = int(obstacle_bottom_y)
+                    obstacle_top_y = int(obstacle_top_y)
+                    
 
-                h = time.time()%1
-                #obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([h, -(0.1-camera_height), 1], rotation_pitch))
-                #obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([h, camera_height, 1], rotation_pitch))
-                if cy < 0.02 or cz == 0:
-                    continue
-                obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, -(cy-camera_height), cz + 0.01], rotation_pitch))                
-                obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([cx, camera_height, cz + 0.01], rotation_pitch))
-                #print(obstacle_bottom_x, obstacle_bottom_y, obstacle_top_x, obstacle_top_y)
-                obstacle_bottom_x = int(obstacle_bottom_x)
-                obstacle_top_x = int(obstacle_top_x)
-                obstacle_bottom_y = int(obstacle_bottom_y)
-                obstacle_top_y = int(obstacle_top_y)
+                    if abs(cy) > max_climb_height / 100:
+                        
+                        line_color = (0, 0, 255 - min(cz * 200, 255))
+                    else:
+                        line_color = (0, 255 - min(cz * 200, 255), 0)
+                    #print(abs(cy))   
 
-                cv2.line(color_image_D435, (obstacle_top_x, obstacle_top_y), (obstacle_bottom_x, obstacle_bottom_y), (0,0,255-min(cz * 100,255)), thickness=10)
+                    if -(cy - camera_height) < camera_height:      
+                        cv2.line(color_image_D435, (obstacle_top_x - 10, obstacle_top_y + 10), (obstacle_top_x, obstacle_top_y), line_color, thickness = line_thickness)
+                        cv2.line(color_image_D435, (obstacle_top_x + 10, obstacle_top_y + 10), (obstacle_top_x, obstacle_top_y), line_color, thickness = line_thickness)
+                        
+                    else:
+                        cv2.line(color_image_D435, (obstacle_top_x - 10, obstacle_top_y - 10), (obstacle_top_x, obstacle_top_y), line_color, thickness = line_thickness)
+                        cv2.line(color_image_D435, (obstacle_top_x + 10, obstacle_top_y - 10), (obstacle_top_x, obstacle_top_y), line_color, thickness = line_thickness)
+                        
+                    cv2.line(color_image_D435, (obstacle_top_x, obstacle_top_y), (obstacle_bottom_x, obstacle_bottom_y), line_color, thickness = line_thickness)
+                    
 
-            
+
+                    
 
 
+        if draw_grid == 1:
+            forward_begin = 0.01
+            forward_end = 3
+            horizontal_begin = -2
+            horizontal_end = 2
+            grid_step = 0.25
+            for horizontal_step in np.arange(horizontal_begin, horizontal_end, grid_step):
+
+                line_begin_x, line_begin_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([horizontal_step, camera_height, forward_begin], rotation))
+                line_end_x, line_end_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([horizontal_step, camera_height, forward_end], rotation))
+                
+                line_begin_x = int(line_begin_x)
+                line_begin_y = int(line_begin_y)
+                line_end_x = int(line_end_x)
+                line_end_y = int(line_end_y)
+                
+                cv2.line(color_image_D435, (line_begin_x, line_begin_y), (line_end_x, line_end_y), (200,200,200), thickness=1)
+
+            for forward_step in np.arange(forward_begin, forward_end, grid_step):
+                line_begin_x, line_begin_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([horizontal_begin, camera_height, forward_step], rotation))
+                line_end_x, line_end_y = rs.rs2_project_point_to_pixel(intrinsics_color, np.matmul([horizontal_end, camera_height, forward_step], rotation))
+                
+                line_begin_x = int(line_begin_x)
+                line_begin_y = int(line_begin_y)
+                line_end_x = int(line_end_x)
+                line_end_y = int(line_end_y)
+                
+                cv2.line(color_image_D435, (line_begin_x, line_begin_y), (line_end_x, line_end_y), (200,200,200), thickness=1)
 
         map_to_redis(r,map,'map')
 
         draw_path_on_image(color_image_D435)
+        draw_path_costs_on_image(color_image_D435)
         map_to_redis(r, color_image_D435,"D435_image")
+        
 
         rotation_bytes = struct.pack('%sf' %3,* [pitch, roll, yaw])
         r.psetex('rotation', 1400, rotation_bytes)
@@ -430,4 +555,6 @@ try:
 except (RuntimeError,KeyboardInterrupt) as e:
     print("well shit",e)
     print("I ran for", time.time()-app_start_time, "seconds")
+    if time.time()-app_start_time < 2:
+        deviceT265.hardware_reset()
 

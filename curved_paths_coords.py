@@ -47,7 +47,7 @@ dict(steering_angle = 20, target_angle = 25, coords = \
 [1130.05, 1045.08, 1045.23, 1328.09]
 ]),
 
-dict(steering_angle = 30, target_angle = 38, coords = \
+dict(steering_angle = 30, target_angle = 30, coords = \
 [[226.055, 100, -123, 100],
 [226.055, 100, -54.6, 251.44],
 [325.447, 245.977, 81.6842, 451.6],
@@ -59,7 +59,7 @@ dict(steering_angle = 30, target_angle = 38, coords = \
 [1133.57, 537.732, 1189.76, 851.648]
 ]),
 
-dict(steering_angle = 50, target_angle = 50, coords = \
+dict(steering_angle = 50, target_angle = 40, coords = \
 [[309.664, 100, -123, 100],
 [309.664, 100, -14.8391, 261.76],
 [355.424, 135.437, 130.504, 399.329],

@@ -19,6 +19,7 @@ def rget_and_float(name, default = None):
         return float(output)
 
 angle_deviation_cost_factor = rget_and_float('angle_deviation_cost_factor', 2)
+angle_deviation_expo = rget_and_float('angle_deviation_expo', 1)
 driving_speed = rget_and_float('driving_speed', 30)
 max_climb_height = rget_and_float('max_climb_height', 10)
 min_speed = rget_and_float('min_speed', 0.05)
@@ -72,9 +73,17 @@ def angle_and_distance_to_target():
         
         z_vector=np.array([0,1])
         angle = np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))) - car_yaw_to_world
-        distance = np.linalg.norm(car2target_vector)     
+        #print("car yaw to world", car_yaw_to_world)
+        #print("vector angle", np.degrees(np.math.atan2(np.linalg.det([car2target_vector,z_vector]),np.dot(car2target_vector,z_vector))))
+        #print("angle", angle)
+        distance = np.linalg.norm(car2target_vector)   
+        if angle < -180:
+            angle = 360 + angle
+        if angle > 180:
+            angle = 360 - angle  
         r.psetex('log_target_distance', 1000, distance)
         r.psetex('log_target_angle', 1000, angle)
+
         #print("angle", angle)  
         return angle, distance
     else:
@@ -93,9 +102,10 @@ while True:
     square_to_square_cost_factor = rget_and_float('square_to_square_cost_factor', 10)
     map=redis_to_map(r,"map")
     path_costs = [[],[],[],[],[],[],[],[],[],[],[]]
-    
+    path_angle_costs = [[],[],[],[],[],[],[],[],[],[],[]]
+    path_height = [[],[],[],[],[],[],[],[],[],[],[]]
     crop = map[230:241,188:212]
-    #crop = map[230:250,191:209]
+    
     in_front_of_car = crop.max() - 100
     r.psetex('log_in_front_of_car', 1000, float(in_front_of_car))
     angle, distance = angle_and_distance_to_target()
@@ -126,7 +136,7 @@ while True:
             square_to_square_cost = 0
             max_height = 0
             
-            angle_cost = abs(target_angle - angle) * angle_deviation_cost_factor
+            angle_cost = m.pow(abs(target_angle - angle) * angle_deviation_cost_factor, angle_deviation_expo)
             
             for square in range(0, square_range):
                 #print(path,square)
@@ -157,28 +167,43 @@ while True:
                 min_height = crop.min() - 100
                 max_height_previous_step = max_height
                 max_height = crop.max() - 100
+
+                path_height[path].append(max_height)
+
                 if square > 4:
                     height_difference_cost += (max_height - min_height) / 4
                     square_to_square_cost += (abs(max_height - max_height_previous_step)) / 4
                 
                 else:
-                    #if max_height - min_height > 10:
-                    #    height_difference_cost += 1000
-                    #else:
-                    #    height_difference_cost += max_height - min_height
 
                     if abs(max_height - max_height_previous_step) > max_climb_height:
                         square_to_square_cost += 1000
                     else:
                         square_to_square_cost += abs(max_height - max_height_previous_step) * square_to_square_cost_factor
             
-            total_cost = height_difference_cost + angle_cost + square_to_square_cost
+            total_cost = angle_cost + square_to_square_cost #height_difference_cost not cosnidered right now
             path_costs[path] = total_cost
+        
 
         minpathcost = min(path_costs)
+
         r.psetex('path_min_cost', 1000, str(minpathcost))
         current_path = path_costs.index(minpathcost)
-        #print("current path", current_path, minpathcost)
+        #print(path_height[current_path])
+        i = 0
+        for square_height in path_height[current_path]:
+            
+            #print(square_height)
+            r.psetex('square_height'+str(i), 1000, float(square_height))
+            i += 1
+        
+        i = 0
+        for cost in path_costs:
+            
+            #print(cost)
+            r.psetex('path_cost'+str(i), 1000, float(cost))
+            r.psetex('path_angle_cost'+str(i), 1000, float(cost))
+            i += 1
 
         if min(path_costs) > 1000 or in_front_of_car > obstacle_stop_height or distance < target_stop_distance:
             #print("stopping: obstacle", in_front_of_car, "distance to target",distance, "min path cost",minpathcost)

@@ -41,28 +41,59 @@ app.component('number', {
   },
 })
 
+app.component('logs', {
+  template: `
+  <div class="row" v-for='log, key in value'>
+    <div class="column">
+      <label>{{key}}</label>
+    </div>
+    <div class="column">
+      <label>{{log}}</label>
+    </div>
+  </div>
+  `,
+  data: () => ({
+    value: 0,
+  }),
+  props: ['key'],
+  created() {
+    this.timer = setInterval(this.get, 200);
+  },
+  methods: {
+    async get() {
+      let r = await fetch('/log_values')
+      this.value = await r.json()
+    },
+  },
+})
+
 app.component('skippy-car', {
   template: `
     <div>
-      <img :src="stream_url" v-if="show_map" @click="show_map=false">
-      <button class="button-primary button-block" v-else @click="show_map=true">show map</button>
-      <img :src="stream_D435_image_url" v-if="show_D435_image" @click="show_D435_image=false">
-      <button class="button-primary button-block" v-else @click="show_D435_image=true">show D435 image</button>      
+      <img id="D435image" :src="stream_D435_image_url" v-if="show_D435_image" @click="setCoord">
+      <logs/>
+      <br>
       <number
         :name='variable'
         v-for='variable in variables'
       />
-      <button class="button-primary button-block" @click='save'>Save to txt</button>
+      <button class="button-primary button-block" @click='save'>Save as standard</button>
+      
     </div>
   `,
   data: () => ({
     variables: [],
-    show_map: true,
+    show_map: false,
     show_D435_image: true,
+    log_titles: [],
+    mouseX: 0,
+    mouseY: 0,
   }),
   async created() {
     let r = await fetch('/variables')
     this.variables = await r.json()
+    let r2 = await fetch('/log_titles')
+    this.log_titles = await r2.json()
   },
   computed: {
     stream_url() {
@@ -84,6 +115,35 @@ app.component('skippy-car', {
         method: 'POST',
       })
     },
+    setCoord() {
+      var mouseX=event.pageX
+      var mouseY=event.pageY
+      var imageleft=document.getElementById("D435image").offsetTop;
+      var imagetop=document.getElementById("D435image").offsetLeft;
+      var imagewidth=document.getElementById("D435image").offsetWidth;
+      var factor=640/imagewidth;
+      var coordX=(mouseX-imageleft)*factor;
+      var coordY=(mouseY-imagetop)*factor;
+      fetch('/timed_value', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          name: 'tap_coord_X',
+          value: coordX,
+          time: 2000
+        })
+      });
+      fetch('/timed_value', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          name: 'tap_coord_Y',
+          value: coordY,
+          time: 2000
+        })
+      })
+    },
+
   }
 })
 

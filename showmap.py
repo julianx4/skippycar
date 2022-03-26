@@ -41,65 +41,33 @@ def redis_to_map(redis,name):
 
 def create_map():
     square_range = int(rget_and_float('square_range', 6))
-    log_sensing_time_received = r.get('log_sensing_time')
-    if log_sensing_time_received is not None:
-        log_sensing_time = round(float(log_sensing_time_received),2)
-    else:
-        log_sensing_time = 0    
 
-    log_target_distance_received = r.get('log_target_distance')
-    if log_target_distance_received is not None:
-        log_target_distance = round(float(log_target_distance_received),2)
-    else:
-        log_target_distance = "None"
 
-    log_target_angle_received = r.get('log_target_angle')
-    if log_target_angle_received is not None:
-        log_target_angle = round(float(log_target_angle_received),2)
-    else:
-        log_target_angle = "None"
+    log_sensing_time = round(float(r.get('log_sensing_time') or 0), 2)
+
+    log_target_distance = round(float(r.get('log_target_distance') or 0), 2)
+    
+    log_target_angle = round(float(r.get('log_target_angle') or 0), 2)
     
     log_target_distance_angle = str(log_target_distance) + " " + str(log_target_angle)
     
-    log_path_received = r.get('path')
-    if log_path_received is not None:
-        log_path = float(log_path_received)
-    else:
-        log_path = "None"
-
-    log_path_min_cost_received = r.get('path_min_cost')
-    if log_path_min_cost_received is not None:
-        log_path_min_cost = round(float(log_path_min_cost_received),2)
-    else:
-        log_path_min_cost = "None"
-
-    log_current_speed_received = r.get('current_speed')
-    if log_current_speed_received is not None:
-        log_current_speed = round(float(log_current_speed_received),2)
-    else:
-        log_current_speed = "None"
+    log_path = float(r.get('path') or 0)
     
-    log_in_front_of_car_received = r.get('log_in_front_of_car')
-    if log_in_front_of_car_received is not None:
-        log_in_front_of_car = float(log_in_front_of_car_received)
-    else:
-        log_in_front_of_car = "None"
+    log_path_min_cost = round(float(r.get('path_min_cost') or 0), 2)
 
+    log_current_speed = round(float(r.get('current_speed') or 0), 2)
+    
+    log_in_front_of_car = float(r.get('log_in_front_of_car') or 0)
     
     voltages_received = r.get('voltages')
     if voltages_received is not None:
         voltages = np.round(np.array(struct.unpack('%sf' %2, voltages_received)),2)
     else:
         voltages = [0,0]
-
     voltages1_and_2 = str(voltages[0]) + " " + str(voltages[1])
 
-    log_uptime_received = r.get('log_uptime')
-    if log_uptime_received is not None:
-        log_uptime = int(float(log_uptime_received))
-    else:
-        log_uptime = "None"
-
+    log_uptime = int(float(r.get('log_uptime') or 0))
+    
     log_sensing_running_received = r.get('log_sensing_running')
     if log_sensing_running_received is not None:
         log_sensing_running = str(log_sensing_running_received.decode("utf-8") )
@@ -248,7 +216,7 @@ else:
         while True:
             frame = create_map()  # read the camera frame
 
-            _, buffer = cv2.imencode('.jpg', frame,[int(cv2.IMWRITE_JPEG_QUALITY), 50])
+            _, buffer = cv2.imencode('.jpg', frame,[int(cv2.IMWRITE_JPEG_QUALITY), 80])
             frame = buffer.tobytes()
             yield (b'--frame\r\n'
                 b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')  # concat frame one by one and show result

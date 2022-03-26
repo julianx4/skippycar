@@ -6,7 +6,6 @@ import cv2
 from flask import Response, Flask
 import pyrealsense2 as rs
 
-
 r = redis.Redis(host='localhost', port=6379, db=0)
 
 def redis_to_map(redis,name):
