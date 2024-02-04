@@ -138,6 +138,7 @@ def create_map():
             cv2.polylines(map,[poly],True,(255,255,255),1)
 
     received_target_coords = r.get('target_car_coords')
+
     if received_target_coords is not None:
         target_car_coords = np.array(struct.unpack('%sf' %3, received_target_coords))   
         mx = int(target_car_coords[0] * 100 + mapW / 2)
