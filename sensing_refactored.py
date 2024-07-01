@@ -9,6 +9,17 @@ import math as m
 from scipy.spatial.transform import Rotation as R
 import curved_paths_coords as pc
 
+
+# world coordinate system
+# up +Y
+# /\    _
+# |     /| forward +Z
+# |    /
+# |   /
+# |  /
+# | /
+# |/______> right +X
+
 class RedisManager:
     def __init__(self):
         self.r = redis.Redis(host='localhost', port=6379, db=0)
@@ -106,7 +117,15 @@ class RealSenseManager:
         self.car_in_world_coord_z_previous = 0
 
         self.camera_height = 0.20  # mounting height of the depth camera vs. ground
-    
+
+    def update_realsense_data(self):
+        self.get_frames()
+        self.get_pose()
+        self.get_image_D435()
+        self.get_bw_image_T265()
+        self.get_depth_frame_D435()
+        self.get_rotation()
+
     def get_frames(self):
         self.framesT265 = self.pipelineT265.wait_for_frames(1000)
         self.framesD435 = self.pipelineD435.wait_for_frames()
@@ -123,10 +142,22 @@ class RealSenseManager:
         self.depth_frame = self.framesD435.get_depth_frame()
     
     def get_bw_image_T265(self):
-        fisheye1_frame = self.framesT265.get_fisheye_frame(1)
-        #fisheye2_frame = self.configT265.get_fisheye_frame(2)
-        self.bw_image_T265 = np.asanyarray(fisheye1_frame.get_data())
-        #image2 = np.asanyarray(fisheye2_frame.get_data())
+        fisheye_frame = self.framesT265.get_fisheye_frame(1)  # Get the fisheye frame from the first camera
+        image = np.asanyarray(fisheye_frame.get_data())
+
+        K = np.array([[self.intrinsics_fish.fx, 0, self.intrinsics_fish.ppx],
+                      [0, self.intrinsics_fish.fy, self.intrinsics_fish.ppy],
+                      [0, 0, 1]])
+        D = np.array(self.intrinsics_fish.coeffs[:4])
+
+        R = np.eye(3)  # Assuming no rotation (identity matrix)
+        size = (self.intrinsics_fish.width, self.intrinsics_fish.height)
+        m1type = cv2.CV_32FC1
+        P = K  # Assuming the new camera matrix is the same as K for simplicity
+
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(K, D, R, P, size, m1type)
+        undistorted_image = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR)
+        self.bw_image_T265 = undistorted_image
 
     def pixel_to_car_coord(self, x, y):
         dist = self.depth_frame.get_distance(x, y)
@@ -175,8 +206,8 @@ class RealSenseManager:
         self.car_in_world_coord_x = data.translation.x
         self.car_in_world_coord_y = data.translation.y
         self.car_in_world_coord_z = -data.translation.z
-
-        pitch = (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.95; #1.3 degree misalignment between T265 tracking camera and D435 depth camera
+        misalignment = 3.5 #degrees between T265 and D435
+        pitch = (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + misalignment
         roll = m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
         self.yaw = m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi
             
@@ -201,12 +232,12 @@ class RealSenseManager:
             intrinsics_detect = self.intrinsics_color
         else:
             intrinsics_detect = self.intrinsics_fish
-            if x > rsm.realsense_color_W:
-                x = rsm.realsense_color_W
+            if x > self.realsense_color_W:
+                x = self.realsense_color_W
             if x < 0:
                 x = 0
-            if y > rsm.realsense_color_H:
-                y = rsm.realsense_color_H
+            if y > self.realsense_color_H:
+                y = self.realsense_color_H
             if y < 0:
                 y = 0
             
@@ -228,6 +259,21 @@ class RealSenseManager:
         return depthx, depthy
         #I use depth_to_color_extrinsics and color_to_depth_extrinsics also as extrinsics for the fisheye cam. It's not correct, but the error doesn't matter for my application  
 
+    def fish_pixel_to_depth_pixel(self, x, y):
+        print("hello")
+        depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
+                    self.depth_frame.get_data(), 
+                    self.depth_scale, 
+                    self.depth_min, 
+                    self.depth_max, 
+                    self.intrinsics_depth, 
+                    self.intrinsics_fish, 
+                    self.depth_to_color_extrinsics, 
+                    self.color_to_depth_extrinsics, 
+                    [x,y])
+        print(depthx, depthy)
+        return depthx, depthy
+    
     def draw_path_on_image(self, square_range):
         square_range = square_range
         path_received = rdm.get_data('path')
@@ -295,15 +341,6 @@ class RealSenseManager:
             poly = poly.reshape((-1, 1, 2))
             cv2.polylines(self.color_image_D435,[poly],True,(255,255,255),2)
 
-    def update_realsense_data(self):
-        self.get_frames()
-        self.get_pose()
-        self.get_image_D435()
-        self.get_bw_image_T265()
-        self.get_depth_frame_D435()
-        self.get_rotation()
-
-    
 class AprilTagDetector:
     def __init__(self, realsensemanager, redismanager):
         self.detector = apriltag.Detector()
@@ -344,6 +381,7 @@ class AprilTagDetector:
             cv2.circle(self.rsm.color_image_D435, (int(tag_floor_x),int(tag_floor_y)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
             cv2.line(self.rsm.color_image_D435, (int(tag_floor_x), int(tag_floor_y)), (int(tagx), int(tagy)), (255,0,0), thickness = 2) 
             cv2.line(self.rsm.color_image_D435, (int(zero_car_x), int(zero_car_y)), (int(tag_floor_x), int(tag_floor_y)), (255,0,0), thickness = 5)
+
 
 class MapManager:
     def __init__(self, width, height, base_height, realsensemanager, redismanager):
@@ -519,12 +557,53 @@ class MapManager:
         # Convert the modified map to bytes and send to Redis
         redis_manager.map_image_to_redis('map', modified_map)
 
+class PersonDetector:
+    def __init__(self, realsensemanager):
+        self.target_world_coords = None
+        self.target_set_time = None
+        self.rsm = realsensemanager  # RealSenseManager instance
+
+    def target_from_person_detector(self):
+        target_angle = rdm.get_data('target_angle')  # Angle in degrees
+        target_distance = rdm.get_data('target_distance')  # Distance in meters
+
+        if target_angle is not None and target_distance is not None:
+            # Convert polar coordinates (angle, distance) to Cartesian coordinates (x, y) in the camera's local space
+            target_z = target_distance * m.cos(m.radians(target_angle))
+            target_x = target_distance * m.sin(m.radians(target_angle))
+
+            # Assuming the target is detected on the ground plane, z = 0 in the camera's local space
+            target_y = 1
+
+            # Transform the local camera coordinates to world coordinates
+            # Here we need to apply the camera (or vehicle's) current rotation and translation
+            # Assuming the RealSenseManager instance (rsm) has methods to transform coordinates
+            target_world_coords = rsm.car_coord_to_world_coord(target_x, target_y, target_z)
+
+            self.target_world_coords = target_world_coords
+            self.target_set_time = time.time()
+        else:
+            # Reset target_world_coords if no person is detected within a certain timeout
+            if self.target_set_time is not None and time.time() - self.target_set_time > 3:
+                self.target_world_coords = None
+
+        return self.target_world_coords
+
+
+    
 
 rsm = RealSenseManager()
 rdm = RedisManager()
 atd = AprilTagDetector(rsm, rdm)
 mapc = MapManager(400, 400, 100, rsm, rdm)
+pd = PersonDetector(rsm)
 app_start_time = time.time()
+rsm.update_realsense_data()
+while True:
+    print(rsm.color_pixel_to_depth_pixel(300,200,"D435"))
+
+    time.sleep(1)
+    exit()
 while True:
     loop_start_time = time.time()
     rsm.update_realsense_data()
@@ -540,23 +619,32 @@ while True:
                                 occupancy_decrease_rate = 10, 
                                 occupancy_increase_rate = 10
                                 )
-    mapc.decay_occupancy_probabilities(decay_rate = 0.01, 
+    mapc.decay_occupancy_probabilities(decay_rate = 0.04, 
                                       max_decay = 10)
     
     rsm.get_yaw_increment()
     mapc.rotate_and_move_map(rsm.yaw_increment, rsm.car_in_world_coord_z_increment * 100, -rsm.car_in_world_coord_x_increment * 100)
     mapc.send_map_to_redis(rdm)
 
-    atd.detect_tags()
-    if atd.target_world_coords is not None:
-        target_world_x, target_world_y, target_world_z =  atd.target_world_coords
+    #atd.detect_tags()
+    # if atd.target_world_coords is not None:
+    #     target_world_x, target_world_y, target_world_z =  atd.target_world_coords
+    #     target_car_x, target_car_y, target_car_z = rsm.world_coord_to_car_coord(target_world_x, target_world_y, target_world_z)
+    #     rdm.set_data('target_car_coords', struct.pack('%sf' %3, target_car_x, target_car_y, target_car_z), 1000)
+    
+    pd.target_from_person_detector() 
+    print(pd.target_world_coords) 
+    if pd.target_world_coords is not None:
+        target_world_x, target_world_y, target_world_z =  pd.target_world_coords
         target_car_x, target_car_y, target_car_z = rsm.world_coord_to_car_coord(target_world_x, target_world_y, target_world_z)
         rdm.set_data('target_car_coords', struct.pack('%sf' %3, target_car_x, target_car_y, target_car_z), 1000)
+    
+
     rdm.set_data('log_uptime', time.time() - app_start_time, 1000)
     rdm.set_data('log_sensing_running', 'on', 1000)
     rdm.set_data('current_speed', rsm.speed)
-
     rsm.draw_path_on_image(mapc.square_range)
     rdm.map_image_to_redis('D435_image', rsm.color_image_D435)
+    rdm.map_image_to_redis('T265_image', rsm.bw_image_T265)
     sensing_time = time.time() - loop_start_time
     rdm.set_data('log_sensing_time', sensing_time, 1000)
