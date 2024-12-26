@@ -9,6 +9,7 @@ import math as m
 from scipy.spatial.transform import Rotation as R
 import curved_paths_coords as pc
 
+DEBUG_MODE = False  # Set to True to see confidence and occupancy maps
 
 # world coordinate system
 # up +Y
@@ -44,7 +45,14 @@ class RedisManager:
         else:
             return float(output)
 
-    def map_image_to_redis(self, name, array):
+    def map_image_to_redis(self, name: str, array: np.ndarray) -> None:
+        """
+        Send raw map data to Redis with clear naming convention
+        
+        Prefix conventions:
+        raw_     - Raw sensor data (e.g., raw_depth_map)
+        overlay_ - Visualization overlays (handled by navigation/showmap)
+        """
         h, w = array.shape[:2]
         shape = struct.pack('>II', h, w)
         encoded = shape + array.tobytes()
@@ -52,10 +60,10 @@ class RedisManager:
 
 class RealSenseManager:
     def __init__(self):
-        self.realsense_depth_W = 1280 #640
-        self.realsense_depth_H = 720 # 360
-        self.realsense_color_W = 1280
-        self.realsense_color_H = 720
+        self.realsense_depth_W = 424 #640
+        self.realsense_depth_H = 240 # 480
+        self.realsense_color_W = 424
+        self.realsense_color_H = 240
 
         self.pipelineT265 = rs.pipeline()
         self.configT265 = rs.config()
@@ -206,7 +214,7 @@ class RealSenseManager:
         self.car_in_world_coord_x = data.translation.x
         self.car_in_world_coord_y = data.translation.y
         self.car_in_world_coord_z = -data.translation.z
-        misalignment = 3.5 #degrees between T265 and D435
+        misalignment = 1 #degrees between T265 and D435
         pitch = (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + misalignment
         roll = m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
         self.yaw = m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi
@@ -230,180 +238,324 @@ class RealSenseManager:
     def color_pixel_to_depth_pixel(self, x, y, cam):
         if cam == "D435":
             intrinsics_detect = self.intrinsics_color
-        else:
-            intrinsics_detect = self.intrinsics_fish
-            if x > self.realsense_color_W:
-                x = self.realsense_color_W
-            if x < 0:
-                x = 0
-            if y > self.realsense_color_H:
-                y = self.realsense_color_H
-            if y < 0:
-                y = 0
+            return self._d435_color_to_depth(x, y, intrinsics_detect)
+        else:  # T265
+            print("Converting T265 pixel to depth pixel")
+            # Updated T265 to D435 transformation with improved scaling
+            # These values need to be calibrated for your specific setup
+            t265_to_d435 = np.array([
+                [1, 0, 0, 0.009],  # x offset in meters
+                [0, 1, 0, 0.021],  # y offset in meters
+                [0, 0, 1, 0.027],  # z offset in meters
+                [0, 0, 0, 1]
+            ])
             
-        depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
-                    self.depth_frame.get_data(), 
-                    self.depth_scale, 
-                    self.depth_min, 
-                    self.depth_max, 
-                    self.intrinsics_depth, 
-                    intrinsics_detect, 
-                    self.depth_to_color_extrinsics, 
-                    self.color_to_depth_extrinsics, 
-                    [x,y])
+            point_t265 = self._t265_pixel_to_3d(x, y)
+            if point_t265 is None:
+                print("Failed to get 3D point from T265")
+                return None, None
+            
+            # Convert to homogeneous coordinates
+            point_homogeneous = np.append(point_t265, 1)
+            
+            # Apply transformation
+            point_d435 = t265_to_d435 @ point_homogeneous
+            print(f"Point in D435 coordinates: {point_d435[:3]}")
+            
+            # Project to D435 image plane
+            depth_x, depth_y = rs.rs2_project_point_to_pixel(
+                self.intrinsics_depth,
+                point_d435[:3]
+            )
+            print(f"Final depth pixels: x={depth_x}, y={depth_y}")
+            
+            return depth_x, depth_y
+        
+    def _t265_pixel_to_3d(self, x, y):
+        """Convert T265 pixel coordinates to 3D point with hybrid distance estimation"""
+        print(f"T265 input pixel: x={x}, y={y}")
+        
+        # First normalize coordinates to get direction
+        x_normalized = (x - self.intrinsics_fish.ppx) / self.intrinsics_fish.fx
+        y_normalized = (y - self.intrinsics_fish.ppy) / self.intrinsics_fish.fy
+        
+        # Calculate ray direction with inverted y coordinate
+        ray_direction = np.array([x_normalized, -y_normalized, 1.0])
+        ray_direction = ray_direction / np.linalg.norm(ray_direction)
+        
+        # Scale coordinates to D435's FOV to check if tag might be visible to it
+        d435_relative_x = x * (self.realsense_depth_W / self.intrinsics_fish.width)
+        
+        # Check if the point would be within D435's horizontal FOV
+        if 0 <= d435_relative_x < self.realsense_depth_W:
+            # Use D435's depth data from the top half of the frame at this horizontal position
+            depth_samples = []
+            # Sample several rows in the top half of the depth frame
+            for y_sample in range(self.realsense_depth_H // 4, self.realsense_depth_H // 2):
+                depth = self.depth_frame.get_distance(int(d435_relative_x), y_sample)
+                if depth > 0:  # Valid depth reading
+                    depth_samples.append(depth)
+            
+            if depth_samples:  # If we got any valid depth readings
+                # Use median depth to avoid outliers
+                assumed_distance = np.median(depth_samples)
+                print(f"Using D435 measured depth: {assumed_distance}m")
+            else:
+                # Fallback to assumption if no valid depth readings
+                assumed_distance = 2.0
+                print(f"No valid D435 depth, using assumed distance: {assumed_distance}m")
+        else:
+            # Point is outside D435 FOV, use assumed distance
+            assumed_distance = 2.0
+            print(f"Point outside D435 FOV, using assumed distance: {assumed_distance}m")
+        
+        # Calculate final 3D point
+        point = ray_direction * assumed_distance
+        print(f"Ray direction: {ray_direction}")
+        print(f"Final 3D point: {point}")
+        
+        return point
 
-        if depthx > self.realsense_depth_W: #somehow the number sometimes goes into the > 10e+30 range
+    def _d435_color_to_depth(self, x, y, intrinsics):
+        """Original D435 color to depth conversion"""
+        depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
+            self.depth_frame.get_data(), 
+            self.depth_scale, 
+            self.depth_min, 
+            self.depth_max, 
+            self.intrinsics_depth, 
+            intrinsics, 
+            self.depth_to_color_extrinsics, 
+            self.color_to_depth_extrinsics, 
+            [x,y]
+        )
+
+        if depthx > self.realsense_depth_W:
             depthx = self.realsense_depth_W - 1
         if depthy > self.realsense_depth_H:
             depthy = self.realsense_depth_H - 1
-        return depthx, depthy
-        #I use depth_to_color_extrinsics and color_to_depth_extrinsics also as extrinsics for the fisheye cam. It's not correct, but the error doesn't matter for my application  
-
-    def fish_pixel_to_depth_pixel(self, x, y):
-        print("hello")
-        depthx, depthy = rs.rs2_project_color_pixel_to_depth_pixel(
-                    self.depth_frame.get_data(), 
-                    self.depth_scale, 
-                    self.depth_min, 
-                    self.depth_max, 
-                    self.intrinsics_depth, 
-                    self.intrinsics_fish, 
-                    self.depth_to_color_extrinsics, 
-                    self.color_to_depth_extrinsics, 
-                    [x,y])
-        print(depthx, depthy)
-        return depthx, depthy
+        
+        return depthx, depthy 
     
-    def draw_path_on_image(self, square_range):
-        square_range = square_range
-        path_received = rdm.get_data('path')
-        if path_received is None:
-            return    
-        elif int(path_received) == -1:
-            return
-
-        path = int(path_received)
-        if path > 5:
-            path_lookup = path - 5
-            l = -1
-        else:
-            path_lookup = path
-            l = 1
-
-        x0_previous = pc.paths[0]['coords'][0][0] / 1000
-        y0_previous = pc.paths[0]['coords'][0][1] / 1000
-        x1_previous = pc.paths[0]['coords'][0][2] / 1000
-        y1_previous = pc.paths[0]['coords'][0][3] / 1000    
-        
-        
-        x0_previous, y0_previous = rs.rs2_project_point_to_pixel(self.intrinsics_color, np.matmul([x0_previous, self.camera_height, y0_previous], self.rotation))
-        x1_previous, y1_previous = rs.rs2_project_point_to_pixel(self.intrinsics_color, np.matmul([x1_previous, self.camera_height, y1_previous], self.rotation))
-        
-        x0_previous = int(x0_previous)
-        x1_previous = int(x1_previous)
-        y0_previous = int(y0_previous)
-        y1_previous = int(y1_previous)
-
-        for square in range(0, square_range):
-            square_height = rdm.get_data('square_height'+str(square)) / 100 #cm to m
-
-
-            x0 = l * pc.paths[path_lookup]['coords'][square][0] / 1000
-            y0 = pc.paths[path_lookup]['coords'][square][1] / 1000
-            x1 = l * pc.paths[path_lookup]['coords'][square][2] / 1000
-            y1 = pc.paths[path_lookup]['coords'][square][3] / 1000
-
-            x2 = l * pc.paths[path_lookup]['coords'][square + 1][0] / 1000
-            y2 = pc.paths[path_lookup]['coords'][square + 1][1] / 1000
-            x3 = l * pc.paths[path_lookup]['coords'][square + 1][2] / 1000
-            y3 = pc.paths[path_lookup]['coords'][square + 1][3] / 1000
-
-            x0, y0 = rs.rs2_project_point_to_pixel(self.intrinsics_color, np.matmul([x0, self.camera_height - square_height, y0], self.rotation))
-            x1, y1 = rs.rs2_project_point_to_pixel(self.intrinsics_color, np.matmul([x1, self.camera_height - square_height, y1], self.rotation))
-            x2, y2 = rs.rs2_project_point_to_pixel(self.intrinsics_color, np.matmul([x2, self.camera_height - square_height, y2], self.rotation))
-            x3, y3 = rs.rs2_project_point_to_pixel(self.intrinsics_color, np.matmul([x3, self.camera_height - square_height, y3], self.rotation))
-            x0 = int(x0)
-            x1 = int(x1)
-            x2 = int(x2)
-            x3 = int(x3)
-            y0 = int(y0)
-            y1 = int(y1)
-            y2 = int(y2)
-            y3 = int(y3)
-            
-            cv2.line(self.color_image_D435, (x0_previous, y0_previous), (x0, y0), (200, 200, 200), thickness=3)
-            cv2.line(self.color_image_D435, (x1_previous, y1_previous), (x1, y1), (200, 200, 200), thickness=3)
-
-            x0_previous, y0_previous = x2, y2
-            x1_previous, y1_previous = x3, y3 
-
-            poly = np.array([[x0,y0],[x1,y1],[x3,y3],[x2,y2]])
-            poly = poly.reshape((-1, 1, 2))
-            cv2.polylines(self.color_image_D435,[poly],True,(255,255,255),2)
-
 class AprilTagDetector:
     def __init__(self, realsensemanager, redismanager):
-        self.detector = apriltag.Detector()
+        # Configure detector with lower detection threshold
+        detector_config = apriltag.DetectorOptions(
+            families='tag36h11',     # Standard tag family
+            border=1,                # Border size (in pixels)
+            nthreads=4,             # Use multiple threads for detection
+            quad_decimate=1.0,      # Don't decimate (reduce) image resolution
+            quad_blur=0.0,          # No blurring
+            refine_edges=True,      # Spend more time trying to find edges
+            refine_decode=True,     # Spend more time trying to decode tags
+            refine_pose=True,       # Refine pose estimates
+            debug=False,            # Disable debug output
+            quad_contours=True      # Use quad contours
+        )
+        self.detector = apriltag.Detector(detector_config)
+        
         self.rsm = realsensemanager
         self.rdm = redismanager
 
         self.target_world_coords = None
-        self.target_car_coords = None   
+        self.target_car_coords = None
 
     def detect_tags(self):
-        x = y = 1000
         detected = False
+        
+        # Try D435 first
         tags = self.detector.detect(self.rsm.gray_image_D435)
         for tag in tags:
-            x, y = tag.center
-            x, y = rsm.color_pixel_to_depth_pixel(x, y, "D435")
-            rdm.set_data('log_detect_cam', "D435", 3000)
-            detected = True
-        if tags == []:
+            try:
+                x, y = tag.center
+                x, y = self.rsm.color_pixel_to_depth_pixel(x, y, "D435")
+                if 0 <= x < self.rsm.realsense_depth_W and 0 <= y < self.rsm.realsense_depth_H:
+                    self.rdm.set_data('log_detect_cam', "D435", 3000)
+                    detected = True
+                    
+                    # Get 3D coordinates using D435's depth
+                    cx, cy, cz = self.rsm.pixel_to_car_coord(int(x), int(y))
+                    cwx, cwy, cwz = self.rsm.car_coord_to_world_coord(cx, cy, cz)
+                    self.target_world_coords = [cwx, cwy, cwz]
+                    
+                    # Convert back to car coordinates for navigation
+                    target_car_x, target_car_y, target_car_z = self.rsm.world_coord_to_car_coord(cwx, cwy, cwz)
+                    target_coords_bytes = struct.pack('%sf' % 3, target_car_x, target_car_y, target_car_z)
+                    self.rdm.set_data('target_car_coords', target_coords_bytes, 3000)
+
+                    break
+                    
+            except Exception as e:
+                print(f"Error processing D435 tag: {e}")
+                continue
+        
+        # If no detection on D435, try T265
+        if not detected:
             tags = self.detector.detect(self.rsm.bw_image_T265)
             for tag in tags:
-                x, y = tag.center
-                x, y = rsm.color_pixel_to_depth_pixel(x, y, "T265")
-                rdm.set_data('log_detect_cam', "T265", 3000)
-                detected = True
+                try:
+                    x, y = tag.center
+                    point_3d = self.rsm._t265_pixel_to_3d(x, y)
+                    
+                    if point_3d is not None:
+                        cx, cy, cz = point_3d
+                        cwx, cwy, cwz = self.rsm.car_coord_to_world_coord(cx, cy, cz)
+                        self.target_world_coords = [cwx, cwy, cwz]
+                        
+                        target_car_x, target_car_y, target_car_z = self.rsm.world_coord_to_car_coord(cwx, cwy, cwz)
+                        target_coords_bytes = struct.pack('%sf' % 3, target_car_x, target_car_y, target_car_z)
+                        self.rdm.set_data('target_car_coords', target_coords_bytes, 3000)
+                        self.rdm.set_data('log_detect_cam', "T265", 3000)
+                        detected = True
 
-        if x > rsm.realsense_color_W or y > rsm.realsense_color_H or x < 0 or y < 0:
-            detected = False 
-
-        if detected:
-            cx, cy, cz = rsm.pixel_to_car_coord(int(x),int(y))
-            cwx, cwy, cwz = rsm.car_coord_to_world_coord(cx, cy, cz)
-            self.target_world_coords = [cwx, cwy, cwz]
-            tagx, tagy = rs.rs2_project_point_to_pixel(self.rsm.intrinsics_color, np.matmul([cx, self.rsm.camera_height - cy, cz], self.rsm.rotation))
-            tag_floor_x, tag_floor_y = rs.rs2_project_point_to_pixel(self.rsm.intrinsics_color, np.matmul([cx, self.rsm.camera_height, cz], self.rsm.rotation))
-            zero_car_x, zero_car_y = rs.rs2_project_point_to_pixel(self.rsm.intrinsics_color, np.matmul([0, self.rsm.camera_height, 0.10], self.rsm.rotation))
-            cv2.circle(self.rsm.color_image_D435, (int(tagx),int(tagy)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
-            cv2.circle(self.rsm.color_image_D435, (int(tag_floor_x),int(tag_floor_y)), 10, (255,255,255), thickness=2, lineType=8, shift=0)
-            cv2.line(self.rsm.color_image_D435, (int(tag_floor_x), int(tag_floor_y)), (int(tagx), int(tagy)), (255,0,0), thickness = 2) 
-            cv2.line(self.rsm.color_image_D435, (int(zero_car_x), int(zero_car_y)), (int(tag_floor_x), int(tag_floor_y)), (255,0,0), thickness = 5)
-
+                        break
+                        
+                except Exception as e:
+                    print(f"Error processing T265 tag: {e}")
+                    continue
+        
+        # Clear target if no detection
+        if not detected:
+            self.target_world_coords = None
 
 class MapManager:
     def __init__(self, width, height, base_height, realsensemanager, redismanager):
         self.mapW = width
         self.mapH = height
         self.map_base_height = base_height
-        # self.map = np.full((self.mapW, self.mapH, 1), self.map_base_height, np.uint8)
-        self.map = np.zeros((self.mapW, self.mapH, 2), dtype=np.uint8)  # Added layer for occupancy probability
+        
+        # Three-layer map setup
+        self.map = np.zeros((self.mapW, self.mapH, 3), dtype=np.float32)
         self.map[:, :, 0] = self.map_base_height  # Height layer initialization
+        self.map[:, :, 1] = 0.5  # Initialize occupancy as unknown (0.5)
+        self.map[:, :, 2] = 0.0  # Initialize confidence as 0
+        
         self.last_update_times = np.full((self.mapW, self.mapH), time.time())
-
-        self.last_time_clear_map = time.time()
-        self.last_time_clear_visible_cone = time.time()
         self.realsensemanager = realsensemanager
         self.redismanager = redismanager
-
+        
+        # Mapping parameters initialization
+        self.confidence_threshold = 0.7
+        self.max_confidence = 10.0
+        self.sensor_noise_model = 0.9
+        self.temporal_decay_rate = 0.1
+        self.occupancy_threshold = 0.7
+        
         self.car_position_on_map = 150
         self.camera_height = realsensemanager.camera_height
-
+        
+        # Create decay mask for temporal updates
+        self._create_decay_region_mask()
+        
         self.update_variables()
 
-        self.create_visible_cone_mask()
+    def _create_decay_region_mask(self):
+        """
+        Creates a mask defining the region where temporal decay should be applied.
+        This is typically the area in front of the car that was previously observed.
+        """
+        mask = np.zeros((self.mapW, self.mapH), dtype=np.uint8)
+        
+        # Define the decay region (same shape as the previous visible cone)
+        decay_region = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+        decay_region = decay_region.reshape((-1, 1, 2))
+        
+        # Fill the decay region polygon with 1s in the mask
+        cv2.fillPoly(mask, [decay_region], 1)
+        
+        # Store the mask for decay calculations
+        self.decay_region_mask = mask
+
+    def bayesian_update_vectorized(self, map_x, map_y, measurement_heights, measurement_confidences):
+        current_time = time.time()
+        
+        # Create time since update array
+        time_since_update = current_time - self.last_update_times[map_y, map_x]
+        
+        # Decay confidence
+        current_confidences = self.map[map_y, map_x, 2] * np.exp(-self.temporal_decay_rate * time_since_update)
+        
+        # Get priors
+        priors = self.map[map_y, map_x, 1]
+        
+        # Calculate alpha for height updates
+        alphas = np.zeros_like(current_confidences)
+        mask = current_confidences > 0
+        alphas[mask] = measurement_confidences[mask] / (measurement_confidences[mask] + current_confidences[mask])
+        
+        # Update heights
+        old_heights = self.map[map_y, map_x, 0]
+        new_heights = np.where(mask,
+                            (1 - alphas) * old_heights + alphas * measurement_heights,
+                            measurement_heights)
+        
+        # Calculate likelihoods
+        likelihoods = np.where(measurement_heights > self.map_base_height,
+                            self.sensor_noise_model,
+                            1 - self.sensor_noise_model)
+        
+        # Bayesian update for occupancy
+        posteriors = (likelihoods * priors) / (likelihoods * priors + (1 - likelihoods) * (1 - priors))
+        
+        # Calculate new confidences
+        new_confidences = np.minimum(current_confidences + measurement_confidences, self.max_confidence)
+        
+        # Update map
+        self.map[map_y, map_x, 0] = new_heights
+        self.map[map_y, map_x, 1] = posteriors
+        self.map[map_y, map_x, 2] = new_confidences
+        self.last_update_times[map_y, map_x] = current_time
+
+    def update_map_and_obstacles_vectorized(self, depth_frame, max_climb_height, rotation, color_image_D435):
+        # Get depth data as numpy array
+        depth_data = np.asanyarray(depth_frame.get_data())
+        
+        # Create coordinate grids
+        h, w = depth_data.shape
+        y_coords, x_coords = np.mgrid[int(h/3):h, 0:w]
+        
+        # Get camera intrinsics
+        fx = self.realsensemanager.intrinsics_depth.fx
+        fy = self.realsensemanager.intrinsics_depth.fy
+        ppx = self.realsensemanager.intrinsics_depth.ppx
+        ppy = self.realsensemanager.intrinsics_depth.ppy
+        
+        # Vectorized deprojection
+        Z = depth_data[y_coords, x_coords] * self.realsensemanager.depth_scale
+        X = (x_coords - ppx) * Z / fx
+        Y = (y_coords - ppy) * Z / fy
+
+        # Stack coordinates
+        points = np.stack((X, Y, Z), axis=-1)
+        
+        # Apply rotation to all points at once
+        points_rotated = np.einsum('ij,klj->kli', rotation, points)
+        
+        # Adjust Y coordinates for camera height
+        points_rotated[:, :, 1] = self.camera_height - points_rotated[:, :, 1]
+        
+        # Convert to map coordinates
+        map_x = (points_rotated[:, :, 0] * 100 + (self.mapW / 2) - 3).astype(int)
+        map_y = (self.mapH - points_rotated[:, :, 2] * 100 - self.car_position_on_map).astype(int)
+        height_values = 100 + points_rotated[:, :, 1] * 100
+        
+        # Create masks for valid points
+        valid_height = points_rotated[:, :, 1] <= self.ignore_above_height
+        valid_coords = (map_x >= 0) & (map_x < self.mapW) & (map_y >= 0) & (map_y < self.mapH)
+        valid_depth = Z > 0
+        valid_mask = valid_height & valid_coords & valid_depth
+        
+        # Calculate confidence based on distance
+        measurement_confidence = np.maximum(0.1, 1.0 - (Z / 5.0))
+        
+        # Get valid points
+        valid_x = map_x[valid_mask]
+        valid_y = map_y[valid_mask]
+        valid_heights = height_values[valid_mask]
+        valid_confidences = measurement_confidence[valid_mask]
+        
+        # Update map using vectorized operation
+        self.bayesian_update_vectorized(valid_x, valid_y, valid_heights, valid_confidences)
 
     def update_variables(self):
         self.target_memory_time = int(self.redismanager.get_float('target_memory_time', 1000))
@@ -411,240 +563,169 @@ class MapManager:
         self.map_base_height = int(self.redismanager.get_float('map_base_height', 100))
         self.map_clear_all_interval = self.redismanager.get_float('map_clear_all_interval', 3)
         self.map_clear_visible_cone_interval = self.redismanager.get_float('map_clear_visible_cone_interval', 0.5)
-        self.depth_pixel_horizontal_raster = int(self.redismanager.get_float('depth_pixel_horizontal_raster', 5)) #50
-        self.depth_pixel_vertical_raster = int(self.redismanager.get_float('depth_pixel_vertical_raster', 1)) #10
+        self.depth_pixel_horizontal_raster = int(self.redismanager.get_float('depth_pixel_horizontal_raster', 5))
+        self.depth_pixel_vertical_raster = int(self.redismanager.get_float('depth_pixel_vertical_raster', 1))
         self.ignore_above_height = self.redismanager.get_float('ignore_above_height', 0.4)
         self.square_range = int(self.redismanager.get_float('square_range', 6))
         self.draw_grid = int(self.redismanager.get_float('draw_grid', 1))
         self.draw_obstacles = int(self.redismanager.get_float('draw_obstacles', 1))
         self.max_climb_height = self.redismanager.get_float('max_climb_height', 10)
-
-    def create_visible_cone_mask(self):
-        # Create an empty mask with the same dimensions as the map
-        mask = np.zeros((self.mapW, self.mapH), dtype=np.uint8)
         
-        # Define the visible cone polygon
-        visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
-        
-        # Fill the visible cone polygon with 1s in the mask
-        cv2.fillPoly(mask, [visible_cone], 1)
-        
-        # Store the mask for later use
-        self.visible_cone_mask = mask
+        # Add probabilistic mapping parameters
+        self.temporal_decay_rate = self.redismanager.get_float('temporal_decay_rate', 0.1)
+        self.confidence_threshold = self.redismanager.get_float('confidence_threshold', 0.7)
+        self.occupancy_threshold = self.redismanager.get_float('occupancy_threshold', 0.7)
+        self.sensor_noise_model = self.redismanager.get_float('sensor_noise_model', 0.9)
+        self.max_confidence = self.redismanager.get_float('max_confidence', 10.0)
 
     def rotate_and_move_map(self, angle, up, right):
-        car_position_x = self.mapW // 2  # Assuming car is in the middle of the map horizontally
-        car_position_y = self.mapH - self.car_position_on_map  # Car is 150cm from the bottom of the map
+        car_position_x = self.mapW // 2
+        car_position_y = self.mapH - self.car_position_on_map
         rotation_center = (car_position_x, car_position_y)
-        # Rotation matrix
-        rot_mat = cv2.getRotationMatrix2D(rotation_center, angle, 1.0)
         
-        # Perform rotation
-        result_rot = cv2.warpAffine(self.map, rot_mat, self.map.shape[1::-1], flags=cv2.INTER_LINEAR, borderValue=(self.map_base_height, self.map_base_height, self.map_base_height))
-        
-        # Movement matrix (translation)
-        move_mat = np.float32([
-            [1, 0, right],
-            [0, 1, up]])
-        
-        # Perform movement
-        result = cv2.warpAffine(result_rot, move_mat, (result_rot.shape[1], result_rot.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(self.map_base_height, self.map_base_height, self.map_base_height))
+        # Rotate and move each channel separately
+        result = np.zeros_like(self.map)
+        for channel in range(3):
+            rot_mat = cv2.getRotationMatrix2D(rotation_center, angle, 1.0)
+            result_rot = cv2.warpAffine(self.map[:, :, channel], rot_mat, 
+                                    self.map.shape[1::-1], 
+                                    flags=cv2.INTER_LINEAR, 
+                                    borderValue=self.map_base_height if channel == 0 else 0.5 if channel == 1 else 0)
+            
+            move_mat = np.float32([[1, 0, right], [0, 1, up]])
+            result[:, :, channel] = cv2.warpAffine(result_rot, move_mat, 
+                                                (result_rot.shape[1], result_rot.shape[0]), 
+                                                flags=cv2.INTER_LINEAR, 
+                                                borderValue=self.map_base_height if channel == 0 else 0.5 if channel == 1 else 0)
         
         self.map = result
 
-    def clear_map(self, map_clear_all_interval, map_clear_visible_cone_interval):
-        if time.time() - self.last_time_clear_map > map_clear_all_interval:  # map is cleared every x seconds to avoid old data
-            self.map = np.full((self.mapW, self.mapH, 1), self.map_base_height, np.uint8)
-            self.last_time_clear_map = time.time()
-
-        if time.time() - self.last_time_clear_visible_cone > map_clear_visible_cone_interval:  # visible cone is cleared every x seconds to ensure moving obstacles are not considered
-            visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
-            visible_cone = visible_cone.reshape((-1, 1, 2))
-            cv2.fillPoly(self.map, [visible_cone], self.map_base_height)
-            self.last_time_clear_visible_cone = time.time()
-
-    def clear_area_in_front_of_car(self):
-        cv2.rectangle(self.map, (188, 230), (212, 241), self.map_base_height, -1)  # clear area directly in front of car to avoid wrong information
-
-    def update_map_and_obstacles(self, depth_frame, max_climb_height, rotation, color_image_D435, occupancy_decrease_rate, occupancy_increase_rate):
-        realsense_depth_W, realsense_depth_H = self.realsensemanager.realsense_depth_W, self.realsensemanager.realsense_depth_H
-        depth_pixel_horizontal_raster, depth_pixel_vertical_raster = self.depth_pixel_horizontal_raster, self.depth_pixel_vertical_raster
-        ignore_above_height = self.ignore_above_height
-        camera_height = self.camera_height
+    def decay_unobserved_areas(self):
+        """
+        Decay confidence in previously observed areas that haven't been updated recently
+        """
         current_time = time.time()
-        for x in range(0, realsense_depth_W, depth_pixel_horizontal_raster):
-            for y in range(int(realsense_depth_H / 3), int(realsense_depth_H), depth_pixel_vertical_raster):
-                dist = depth_frame.get_distance(x, y)
-                cx, cy, cz = rs.rs2_deproject_pixel_to_point(self.realsensemanager.intrinsics_color, [x, y], dist)
-                c = np.array([cx, cy, cz])
-                cx, cy, cz = np.matmul(rotation, c)
-                cy = camera_height - cy  # car_coords are floor level
-
-                if cy > ignore_above_height:  # ignore obstacles above car height
-                    continue
-
-                mx = int(cx * 100 + (self.mapW / 2) - 3)  # 3cm correction of camera position off center
-                my = int((self.mapH - cz * 100) - self.car_position_on_map)  # car is 150cm from bottom of the map
-
-                if mx < 0 or mx >= self.mapW or my < 0 or my >= self.mapH:
-                    continue  # Skip this point because it's outside the map
-
-                # Update height and occupancy probability
-                self.map[my, mx, 0] = int(100 + cy * 100)  # 100 is 0cm resolution 1cm
-
-                occupancy_probability = self.map[my, mx, 1]
-                if cy < ignore_above_height:  # If obstacle detected
-                    # Increase occupancy probability
-                    occupancy_probability = min(occupancy_probability + occupancy_increase_rate, 255)
-                else:
-                    # Decrease occupancy probability
-                    occupancy_probability = max(occupancy_probability - occupancy_decrease_rate, 0)
-                self.map[my, mx, 1] = occupancy_probability
-
-                # Update the last update time for this cell
-                self.last_update_times[my, mx] = current_time
-
-                if self.draw_obstacles:
-                    line_thickness = 2
-                    if abs(cy) < 0.02 or cz == 0:  #
-                        continue
-                    obstacle_top_x, obstacle_top_y = rs.rs2_project_point_to_pixel(self.realsensemanager.intrinsics_color, np.matmul([cx, -(cy - camera_height), cz + 0.01], rotation))                
-                    obstacle_bottom_x, obstacle_bottom_y = rs.rs2_project_point_to_pixel(self.realsensemanager.intrinsics_color, np.matmul([cx, camera_height, cz + 0.01], rotation))
-                 
-                    obstacle_bottom_x = int(obstacle_bottom_x)
-                    obstacle_top_x = int(obstacle_top_x)
-                    obstacle_bottom_y = int(obstacle_bottom_y)
-                    obstacle_top_y = int(obstacle_top_y)
-                    
-
-                    if abs(cy) > max_climb_height / 100:
-                        line_color = (0, 0, 255 - min(cz * 200, 255))
-                    else:
-                        line_color = (0, 255 - min(cz * 200, 255), 0)
-
-                    if -(cy - camera_height) < camera_height:      
-                        cv2.line(color_image_D435, (obstacle_top_x - 10, obstacle_top_y + 10), (obstacle_top_x, obstacle_top_y), line_color, thickness=line_thickness)
-                        cv2.line(color_image_D435, (obstacle_top_x + 10, obstacle_top_y + 10), (obstacle_top_x, obstacle_top_y), line_color, thickness=line_thickness)
-                    else:
-                        cv2.line(color_image_D435, (obstacle_top_x - 10, obstacle_top_y - 10), (obstacle_top_x, obstacle_top_y), line_color, thickness=line_thickness)
-                        cv2.line(color_image_D435, (obstacle_top_x + 10, obstacle_top_y - 10), (obstacle_top_x, obstacle_top_y), line_color, thickness=line_thickness)
-                        
-                    cv2.line(color_image_D435, (obstacle_top_x, obstacle_top_y), (obstacle_bottom_x, obstacle_bottom_y), line_color, thickness=line_thickness)
-
-
-    def decay_occupancy_probabilities(self, decay_rate, max_decay):
-        current_time = time.time()
-        time_since_last_update = current_time - self.last_update_times
+        time_since_update = current_time - self.last_update_times
         
-        # Calculate decay amount based on the time since the last update
-        decay_amount = decay_rate * time_since_last_update
-        decay_amount = np.clip(decay_amount, 0, max_decay)  # Limit the decay amount to max_decay
+        # Apply decay only within the defined decay region
+        decay_mask = (self.decay_region_mask == 1)
+        time_since_update_masked = time_since_update * decay_mask
         
-        # Ensure decay is only applied within the visible cone
-        decay_mask = (self.visible_cone_mask == 1)
-        time_since_last_update_masked = time_since_last_update * decay_mask  # Apply the mask
-        decay_amount_masked = decay_rate * time_since_last_update_masked  # Calculate decay only for masked areas
-        decay_amount_masked = np.clip(decay_amount_masked, 0, max_decay)  # Limit the decay amount to max_decay
+        # Calculate decay factor
+        decay_factor = np.exp(-self.temporal_decay_rate * time_since_update_masked)
         
-        # Apply decay to the occupancy probabilities only within the visible cone
-        self.map[:, :, 1] = np.clip(self.map[:, :, 1] - decay_amount_masked, 0, 255)
+        # Apply decay to confidence
+        self.map[:, :, 2] *= decay_factor
+        
+        # Reset cells with low confidence to unknown state
+        low_confidence_mask = (self.map[:, :, 2] < 0.2)
+        self.map[low_confidence_mask, 1] = 0.5  # Reset occupancy to unknown
+        self.map[low_confidence_mask, 0] = self.map_base_height  # Reset height to base
 
-    def send_map_to_redis(self, redis_manager):
-        # Create a modified version of the height map
-        # Set the height to base_height if the occupancy probability is less than 50%
-        modified_map = np.where(self.map[:, :, 1] < 30, self.map_base_height, self.map[:, :, 0])
-        #modified_map = self.map[:, :, 1]
-        # Convert the modified map to bytes and send to Redis
-        redis_manager.map_image_to_redis('map', modified_map)
+    def publish_raw_maps(self, redis_manager):
+        """
+        Publish raw map data to Redis without any visualization elements
+        """
+        # Convert maps to uint8 for Redis storage
+        height_map = self.map[:, :, 0].astype(np.uint8)
+        confidence_map = (self.map[:, :, 2] * 255).astype(np.uint8)
+        occupancy_map = (self.map[:, :, 1] * 255).astype(np.uint8)
+        
+        # Send raw maps to Redis with clear prefixes
+        redis_manager.map_image_to_redis('raw_height_map', height_map)
+        redis_manager.map_image_to_redis('raw_confidence_map', confidence_map)
+        redis_manager.map_image_to_redis('raw_occupancy_map', occupancy_map)
 
-class PersonDetector:
-    def __init__(self, realsensemanager):
-        self.target_world_coords = None
-        self.target_set_time = None
-        self.rsm = realsensemanager  # RealSenseManager instance
-
-    def target_from_person_detector(self):
-        target_angle = rdm.get_data('target_angle')  # Angle in degrees
-        target_distance = rdm.get_data('target_distance')  # Distance in meters
-
-        if target_angle is not None and target_distance is not None:
-            # Convert polar coordinates (angle, distance) to Cartesian coordinates (x, y) in the camera's local space
-            target_z = target_distance * m.cos(m.radians(target_angle))
-            target_x = target_distance * m.sin(m.radians(target_angle))
-
-            # Assuming the target is detected on the ground plane, z = 0 in the camera's local space
-            target_y = 1
-
-            # Transform the local camera coordinates to world coordinates
-            # Here we need to apply the camera (or vehicle's) current rotation and translation
-            # Assuming the RealSenseManager instance (rsm) has methods to transform coordinates
-            target_world_coords = rsm.car_coord_to_world_coord(target_x, target_y, target_z)
-
-            self.target_world_coords = target_world_coords
-            self.target_set_time = time.time()
-        else:
-            # Reset target_world_coords if no person is detected within a certain timeout
-            if self.target_set_time is not None and time.time() - self.target_set_time > 3:
-                self.target_world_coords = None
-
-        return self.target_world_coords
-
-
-    
 
 rsm = RealSenseManager()
 rdm = RedisManager()
 atd = AprilTagDetector(rsm, rdm)
-mapc = MapManager(400, 400, 100, rsm, rdm)
-pd = PersonDetector(rsm)
+mapc = MapManager(
+    width=400, 
+    height=400, 
+    base_height=100, 
+    realsensemanager=rsm, 
+    redismanager=rdm
+)
+# pd = PersonDetector(rsm)
 app_start_time = time.time()
 rsm.update_realsense_data()
-while True:
-    print(rsm.color_pixel_to_depth_pixel(300,200,"D435"))
+# while True:
+#     print(rsm.color_pixel_to_depth_pixel(300,200,"D435"))
 
-    time.sleep(1)
-    exit()
+#     time.sleep(1)
+#     exit()
 while True:
     loop_start_time = time.time()
+    
+    # Update sensor data
     rsm.update_realsense_data()
     mapc.update_variables()
-    
     rsm.get_rotation()
     
+    # Update map with new sensor data
+    mapc.update_map_and_obstacles_vectorized(
+        depth_frame=rsm.depth_frame,
+        max_climb_height=10,
+        rotation=rsm.rotation,
+        color_image_D435=rsm.color_image_D435,
+        #occupancy_increase_rate=0.1,  # Rate at which occupancy probability increases
+        #occupancy_decrease_rate=0.05   # Rate at which occupancy probability decreases
+    )
+    # Handle AprilTag detection
+    atd.detect_tags()
+
+    # Apply temporal decay to map
+    mapc.decay_unobserved_areas()
     
-    mapc.update_map_and_obstacles(depth_frame = rsm.depth_frame, 
-                                max_climb_height = 10,
-                                rotation = rsm.rotation, 
-                                color_image_D435 = rsm.color_image_D435,
-                                occupancy_decrease_rate = 10, 
-                                occupancy_increase_rate = 10
-                                )
-    mapc.decay_occupancy_probabilities(decay_rate = 0.04, 
-                                      max_decay = 10)
-    
+    # Handle map rotation and movement
     rsm.get_yaw_increment()
-    mapc.rotate_and_move_map(rsm.yaw_increment, rsm.car_in_world_coord_z_increment * 100, -rsm.car_in_world_coord_x_increment * 100)
-    mapc.send_map_to_redis(rdm)
-
-    #atd.detect_tags()
-    # if atd.target_world_coords is not None:
-    #     target_world_x, target_world_y, target_world_z =  atd.target_world_coords
-    #     target_car_x, target_car_y, target_car_z = rsm.world_coord_to_car_coord(target_world_x, target_world_y, target_world_z)
-    #     rdm.set_data('target_car_coords', struct.pack('%sf' %3, target_car_x, target_car_y, target_car_z), 1000)
+    mapc.rotate_and_move_map(
+        rsm.yaw_increment, 
+        rsm.car_in_world_coord_z_increment * 100, 
+        -rsm.car_in_world_coord_x_increment * 100
+    )
     
-    pd.target_from_person_detector() 
-    print(pd.target_world_coords) 
-    if pd.target_world_coords is not None:
-        target_world_x, target_world_y, target_world_z =  pd.target_world_coords
-        target_car_x, target_car_y, target_car_z = rsm.world_coord_to_car_coord(target_world_x, target_world_y, target_world_z)
-        rdm.set_data('target_car_coords', struct.pack('%sf' %3, target_car_x, target_car_y, target_car_z), 1000)
-    
+    # Send updated map to Redis
+    mapc.publish_raw_maps(rdm)
 
+    # # Person detection and target tracking
+    # pd.target_from_person_detector()
+    # if pd.target_world_coords is not None:
+    #     target_world_x, target_world_y, target_world_z = pd.target_world_coords
+    #     target_car_x, target_car_y, target_car_z = rsm.world_coord_to_car_coord(
+    #         target_world_x, 
+    #         target_world_y, 
+    #         target_world_z
+    #     )
+    #     rdm.set_data(
+    #         'target_car_coords', 
+    #         struct.pack('%sf' % 3, target_car_x, target_car_y, target_car_z), 
+    #         1000
+    #     )
+
+
+    # Update system status in Redis
     rdm.set_data('log_uptime', time.time() - app_start_time, 1000)
     rdm.set_data('log_sensing_running', 'on', 1000)
     rdm.set_data('current_speed', rsm.speed)
-    rsm.draw_path_on_image(mapc.square_range)
+
+    # Update visualization
     rdm.map_image_to_redis('D435_image', rsm.color_image_D435)
     rdm.map_image_to_redis('T265_image', rsm.bw_image_T265)
+
+    # Log timing
     sensing_time = time.time() - loop_start_time
     rdm.set_data('log_sensing_time', sensing_time, 1000)
+
+    # Optional: Add debug visualizations
+    if DEBUG_MODE:
+        # Send confidence map for visualization
+        confidence_map = (mapc.map[:, :, 2] * 255).astype(np.uint8)
+        rdm.map_image_to_redis('confidence_map', confidence_map)
+        
+        # Send occupancy map for visualization
+        occupancy_map = (mapc.map[:, :, 1] * 255).astype(np.uint8)
+        rdm.map_image_to_redis('occupancy_map', occupancy_map)
+
+    # print(mapc.depth_pixel_horizontal_raster, mapc.depth_pixel_vertical_raster)

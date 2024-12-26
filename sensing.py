@@ -46,10 +46,10 @@ max_climb_height = rget_and_float('max_climb_height', 10)
 #----
 
 realsense_depth_W = 640
-realsense_depth_H = 360
+realsense_depth_H = 480
 
 realsense_color_W = 640
-realsense_color_H = 360
+realsense_color_H = 480
 
 
 mapW = 400
@@ -321,7 +321,7 @@ try:
             car_in_world_coord_y = data.translation.y + car_in_world_coord_y_temp
             car_in_world_coord_z = -data.translation.z + car_in_world_coord_z_temp
 
-            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 1.95; #1.3 degree misalignment between T265 tracking camera and D435 depth camera
+            pitch =  (-m.asin(2.0 * (x*z - w*y)) * 180.0 / m.pi) + 4; #1.3 degree misalignment between T265 tracking camera and D435 depth camera
             roll  =  m.atan2(2.0 * (w*x + y*z), w*w - x*x - y*y + z*z) * 180.0 / m.pi 
             yaw   =  m.atan2(2.0 * (w*z + x*y), w*w + x*x - y*y - z*z) * 180.0 / m.pi + yaw_temp
             if time.time() - last_time_pipe_restart > 30 and pi4:

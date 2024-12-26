@@ -46,10 +46,10 @@ max_climb_height = rget_and_float('max_climb_height', 10)
 #----
 
 realsense_depth_W = 640
-realsense_depth_H = 360
+realsense_depth_H = 480
 
 realsense_color_W = 640
-realsense_color_H = 360
+realsense_color_H = 480
 
 
 mapW = 400
