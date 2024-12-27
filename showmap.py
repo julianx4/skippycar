@@ -101,7 +101,7 @@ def create_map():
 
         
     last_time = time.time()
-    map = redis_to_map(r, "map")
+    map = redis_to_map(r, "raw_height_map")
 
     cv2.rectangle(map,(187,242),(213,305),(0, 100, 255),-1) #draw car
     visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)

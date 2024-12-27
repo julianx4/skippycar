@@ -273,7 +273,7 @@ class RealSenseManager:
         
     def _t265_pixel_to_3d(self, x, y):
         """Convert T265 pixel coordinates to 3D point with hybrid distance estimation"""
-        print(f"T265 input pixel: x={x}, y={y}")
+        #print(f"T265 input pixel: x={x}, y={y}")
         
         # First normalize coordinates to get direction
         x_normalized = (x - self.intrinsics_fish.ppx) / self.intrinsics_fish.fx
@@ -299,20 +299,20 @@ class RealSenseManager:
             if depth_samples:  # If we got any valid depth readings
                 # Use median depth to avoid outliers
                 assumed_distance = np.median(depth_samples)
-                print(f"Using D435 measured depth: {assumed_distance}m")
+                #print(f"Using D435 measured depth: {assumed_distance}m")
             else:
                 # Fallback to assumption if no valid depth readings
-                assumed_distance = 2.0
-                print(f"No valid D435 depth, using assumed distance: {assumed_distance}m")
+                assumed_distance = 4.0
+                #print(f"No valid D435 depth, using assumed distance: {assumed_distance}m")
         else:
             # Point is outside D435 FOV, use assumed distance
-            assumed_distance = 2.0
-            print(f"Point outside D435 FOV, using assumed distance: {assumed_distance}m")
+            assumed_distance = 4.0
+            #print(f"Point outside D435 FOV, using assumed distance: {assumed_distance}m")
         
         # Calculate final 3D point
         point = ray_direction * assumed_distance
-        print(f"Ray direction: {ray_direction}")
-        print(f"Final 3D point: {point}")
+        #print(f"Ray direction: {ray_direction}")
+        #print(f"Final 3D point: {point}")
         
         return point
 
@@ -430,9 +430,11 @@ class MapManager:
         self.map[:, :, 1] = 0.5  # Initialize occupancy as unknown (0.5)
         self.map[:, :, 2] = 0.0  # Initialize confidence as 0
         
+
         self.last_update_times = np.full((self.mapW, self.mapH), time.time())
         self.realsensemanager = realsensemanager
         self.redismanager = redismanager
+
         
         # Mapping parameters initialization
         self.confidence_threshold = 0.7
@@ -444,10 +446,13 @@ class MapManager:
         self.car_position_on_map = 150
         self.camera_height = realsensemanager.camera_height
         
+        self.publish_raw_maps(self.redismanager)
+
         # Create decay mask for temporal updates
         self._create_decay_region_mask()
         
         self.update_variables()
+        
 
     def _create_decay_region_mask(self):
         """

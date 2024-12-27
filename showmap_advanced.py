@@ -31,10 +31,10 @@ class MapVisualizer:
         self.config = MapConfig()
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
-        # Define visualization layers with their colors
+        # Define visualization layers with their colors and blend modes
         self.layers = {
             'base': MapLayer('raw_height_map', (128, 128, 128)),  # Base height map in gray
-            'path': MapLayer('overlay_path', (255, 255, 255), 1.0),  # Path overlay in white
+            'path': MapLayer('overlay_path', (255, 0, 0), 1.0),  # Path overlay with full opacity
             'obstacle': MapLayer('overlay_obstacles', (255, 0, 0), 0.7),  # Obstacles in red
             'slopes': MapLayer('overlay_slopes', (0, 0, 255), 0.5),  # Slopes in blue
             'confidence': MapLayer('raw_confidence_map', (0, 255, 0), 0.3),  # Confidence in green
@@ -53,15 +53,21 @@ class MapVisualizer:
         return float(value)
 
     def get_redis_map(self, name: str) -> Optional[np.ndarray]:
-        """Retrieve map data from Redis"""
+        """Retrieve map data from Redis with proper type handling"""
         encoded = self.redis_client.get(name)
         if encoded is None:
             return np.full((self.config.height, self.config.width), 
-                         self.config.base_height, np.uint8)
+                          self.config.base_height, np.uint8)
             
         h, w = struct.unpack('>II', encoded[:8])
-        array = np.frombuffer(encoded, dtype=np.uint8, offset=8).reshape(h, w)
-        return array
+        data = encoded[8:]
+        
+        # Handle RGBA data
+        if len(data) == h * w * 4:
+            return np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
+        else:
+            # Handle single-channel data
+            return np.frombuffer(data, dtype=np.uint8).reshape(h, w)
 
     def draw_car_and_cone(self, map_image: np.ndarray) -> None:
         """Draw car rectangle and visible cone"""
@@ -159,56 +165,60 @@ class MapVisualizer:
                     self.target_line_color, thickness=3)
 
     def create_visualization(self) -> np.ndarray:
-        """Create complete map visualization"""
-        # Get base map
+        """Create complete map visualization with proper layer blending"""
+        # Start with base map
         base_map = self.get_redis_map('raw_height_map')
-        map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR).astype(np.float32) / 255.0  # Normalize to [0,1]
+        map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR)
         
-        # Blend each enabled overlay layer
+        # Process each layer
         for layer_name, layer in self.layers.items():
             if not layer.enabled or layer_name == 'base':
                 continue
             
-            # Get layer data
             layer_data = self.get_redis_map(layer.name)
             if layer_data is None:
                 continue
-            
-            # Normalize layer data
-            layer_normalized = cv2.normalize(layer_data, None, 0, 1, cv2.NORM_MINMAX).astype(np.float32)
-            
-            # Create colored overlay
-            overlay = np.zeros_like(map_image, dtype=np.float32)
-            if layer_name == 'slopes':
-                # Special handling for slope colormap
-                colored = cv2.applyColorMap((layer_normalized * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                overlay = colored.astype(np.float32) / 255.0
+
+            # Special handling for path overlay
+            if layer_name == 'path' and len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
+                # Extract RGB and alpha channels
+                rgb = layer_data[..., :3].astype(float)
+                alpha = layer_data[..., 3].astype(float) / 255.0
+                
+                # Create alpha mask for each channel
+                alpha_3d = np.stack([alpha] * 3, axis=-1)
+                
+                # Blend the path overlay
+                mask = alpha > 0
+                map_image[mask] = (map_image[mask] * (1 - alpha_3d[mask]) + 
+                                rgb[mask] * alpha_3d[mask]).astype(np.uint8)
+            elif len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
+                # Handle other RGBA overlays
+                overlay = layer_data[..., :3].astype(float)
+                alpha = layer_data[..., 3].astype(float) / 255.0 * layer.alpha
+                alpha_3d = np.stack([alpha] * 3, axis=-1)
+                map_image = (map_image * (1 - alpha_3d) + overlay * alpha_3d).astype(np.uint8)
             else:
-                # Normal coloring
-                mask = layer_normalized > 0.1  # Slight threshold to reduce noise
-                overlay[mask] = np.array(layer.color, dtype=np.float32) / 255.0
-            
-            # Blend with alpha
-            map_image = cv2.addWeighted(
-                overlay, layer.alpha,
-                map_image, 1.0,
-                0
-            )
+                # Handle single-channel data
+                normalized = cv2.normalize(layer_data, None, 0, 1, cv2.NORM_MINMAX)
+                if layer_name == 'slopes':
+                    colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), 
+                                            cv2.COLORMAP_JET)
+                    map_image = cv2.addWeighted(map_image, 1.0, colored, layer.alpha, 0)
+                else:
+                    mask = normalized > 0.1
+                    overlay = np.zeros_like(map_image)
+                    overlay[mask] = np.array(layer.color)
+                    map_image = cv2.addWeighted(map_image, 1.0, overlay, layer.alpha, 0)
+
+        map_image = map_image.astype(np.uint8)
         
-        # Rescale back to uint8 for display
-        map_image = (map_image * 255).astype(np.uint8)
-        
-        # Draw car and visible cone
+        # Draw additional elements
         self.draw_car_and_cone(map_image)
-        
-        # Draw target line
         self.draw_target_line(map_image)
-        
-        # Draw debug information
         self.draw_debug_info(map_image)
         
         return map_image
-
 
     def run(self):
         """Main visualization loop"""
