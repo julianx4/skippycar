@@ -1,3 +1,4 @@
+#showmap_advanced.py
 import numpy as np
 import redis
 import struct
@@ -9,11 +10,15 @@ from typing import Dict, Optional, List, Tuple
 @dataclass
 class MapConfig:
     """Configuration for map visualization"""
-    width: int = 400
-    height: int = 400
+    width: int = 400    
+    height: int = 400   
     base_height: int = 100
     map_refresh: float = 0.2
     font = cv2.FONT_HERSHEY_SIMPLEX
+    cm_per_pixel: int = 2  
+    camera_fov: float = 90.0  # Camera field of view in degrees
+    car_position_on_map: int = 250 // cm_per_pixel  # Same as sensing_advanced.py
+    
 
 
 class MapLayer:
@@ -68,39 +73,64 @@ class MapVisualizer:
         else:
             # Handle single-channel data
             return np.frombuffer(data, dtype=np.uint8).reshape(h, w)
-
-    def draw_car_and_cone(self, map_image: np.ndarray) -> None:
-        """Draw car rectangle and visible cone"""
-        # Draw car rectangle in orange
-        cv2.rectangle(map_image, (187, 242), (213, 305), self.car_color, -1)
         
-        # Draw visible cone in white
-        visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+    def draw_car_and_cone(self, map_image: np.ndarray) -> None:
+        """Draw car rectangle and visible cone using explicit angle from camera position"""
+        # Car dimensions
+        car_width_pixels = 13    # 25cm / 2cm per pixel
+        car_length_pixels = 28   # 55cm / 2cm per pixel
+        
+        # Car position - FIXED to match terrain mapping
+        car_center_x = self.config.width // 2
+        car_y = self.config.height - self.config.car_position_on_map
+        
+        # Draw car rectangle in orange
+        cv2.rectangle(map_image, 
+                    (car_center_x - car_width_pixels//2, car_y + car_length_pixels),
+                    (car_center_x + car_width_pixels//2, car_y),                  
+                    self.car_color, -1)
+        
+        # Calculate cone from front of car 
+        camera_y = car_y #+ car_length_pixels  # Camera at front of car
+        
+        # Calculate cone points based on FOV angle
+        fov_rad = np.radians(self.config.camera_fov)
+        distance_to_top = camera_y
+        
+        # Calculate cone width at map top using trigonometry
+        cone_width = int(2 * distance_to_top * np.tan(fov_rad / 2))
+        
+        # Define cone vertices starting from camera position
+        visible_cone = np.array([
+            [car_center_x, camera_y],  # Camera position (cone apex)
+            [car_center_x - cone_width//2, 0],  # Left edge at top of map
+            [car_center_x + cone_width//2, 0]   # Right edge at top of map
+        ], np.int32)
+        
         visible_cone = visible_cone.reshape((-1, 1, 2))
         cv2.polylines(map_image, [visible_cone], True, (255, 255, 255), 1)
-
+        
     def draw_debug_info(self, map_image: np.ndarray) -> None:
-        """Draw all debug information"""
-        # Get all the debug values
+        """Draw debug information with adjusted positions"""
         debug_info = self._get_debug_info()
         
         # Draw left column (system status)
         count = 1
         for text, value in debug_info['left'].items():
             count += 1
-            cv2.putText(map_image, str(text), (20, 300 + 10 * count), 
-                       self.config.font, 0.4, self.text_color, 1)
-            cv2.putText(map_image, str(value), (140, 300 + 10 * count), 
-                       self.config.font, 0.4, self.text_color, 1)
+            cv2.putText(map_image, str(text), (20, 300 + 10 * count),  # Was (20, 300...)
+                    self.config.font, 0.3, self.text_color, 1)       # Was 0.4
+            cv2.putText(map_image, str(value), (140, 300 + 10 * count), # Was (140, 300...)
+                    self.config.font, 0.3, self.text_color, 1)
 
         # Draw right column (measurements)
         count = 1
         for text, value in debug_info['right'].items():
             count += 1
-            cv2.putText(map_image, str(text), (187, 300 + 10 * count), 
-                       self.config.font, 0.4, self.text_color, 1)
-            cv2.putText(map_image, str(value), (310, 300 + 10 * count), 
-                       self.config.font, 0.4, self.text_color, 1)
+            cv2.putText(map_image, str(text), (187, 300 + 10 * count),  # Was (187, 300...)
+                    self.config.font, 0.3, self.text_color, 1)       # Was 0.4
+            cv2.putText(map_image, str(value), (310, 300 + 10 * count), # Was (310, 300...)
+                    self.config.font, 0.3, self.text_color, 1)
 
     def _get_debug_info(self) -> Dict:
         """Collect all debug information from Redis"""
@@ -152,73 +182,70 @@ class MapVisualizer:
             }
         }
 
+
     def draw_target_line(self, map_image: np.ndarray) -> None:
-        """Draw line to target if target exists"""
+        """Draw line to target with scaled coordinates"""
         target_coords = self.redis_client.get('target_car_coords')
         if target_coords is not None:
             coords = np.array(struct.unpack('%sf' % 3, target_coords))
-            mx = int(coords[0] * 100 + self.config.width / 2)
-            my = int(self.config.height - coords[2] * 100)
+            
+            # Scale coordinates: 50 pixels per meter (since we're at 2cm/pixel)
+            mx = int(coords[0] * 50 + self.config.width / 2)
+            my = int(self.config.height - self.config.car_position_on_map - coords[2] * 50)
+            
+            # Start from car front
+            car_y = self.config.height - self.config.car_position_on_map
+            
             cv2.line(map_image, 
-                    (int(self.config.width/2), self.config.height - 150),
-                    (mx, my - 150), 
-                    self.target_line_color, thickness=3)
+                    (self.config.width//2, car_y),  # Start from car front center
+                    (mx, my),
+                    self.target_line_color, thickness=2)
 
     def create_visualization(self) -> np.ndarray:
         """Create complete map visualization with proper layer blending"""
-        # Start with base map
-        base_map = self.get_redis_map('raw_height_map')
-        map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR)
-        
-        # Process each layer
-        for layer_name, layer in self.layers.items():
-            if not layer.enabled or layer_name == 'base':
-                continue
+        try:
+            # Start with base map
+            base_map = self.get_redis_map('raw_height_map')
+            map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR)
             
-            layer_data = self.get_redis_map(layer.name)
-            if layer_data is None:
-                continue
-
-            # Special handling for path overlay
-            if layer_name == 'path' and len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
-                # Extract RGB and alpha channels
-                rgb = layer_data[..., :3].astype(float)
-                alpha = layer_data[..., 3].astype(float) / 255.0
+            # # Process each layer
+            # for layer_name, layer in self.layers.items():
+            #     if not layer.enabled or layer_name == 'base':
+            #         continue
                 
-                # Create alpha mask for each channel
-                alpha_3d = np.stack([alpha] * 3, axis=-1)
-                
-                # Blend the path overlay
-                mask = alpha > 0
-                map_image[mask] = (map_image[mask] * (1 - alpha_3d[mask]) + 
-                                rgb[mask] * alpha_3d[mask]).astype(np.uint8)
-            elif len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
-                # Handle other RGBA overlays
-                overlay = layer_data[..., :3].astype(float)
-                alpha = layer_data[..., 3].astype(float) / 255.0 * layer.alpha
-                alpha_3d = np.stack([alpha] * 3, axis=-1)
-                map_image = (map_image * (1 - alpha_3d) + overlay * alpha_3d).astype(np.uint8)
-            else:
-                # Handle single-channel data
-                normalized = cv2.normalize(layer_data, None, 0, 1, cv2.NORM_MINMAX)
-                if layer_name == 'slopes':
-                    colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), 
-                                            cv2.COLORMAP_JET)
-                    map_image = cv2.addWeighted(map_image, 1.0, colored, layer.alpha, 0)
-                else:
-                    mask = normalized > 0.1
-                    overlay = np.zeros_like(map_image)
-                    overlay[mask] = np.array(layer.color)
-                    map_image = cv2.addWeighted(map_image, 1.0, overlay, layer.alpha, 0)
+            #     layer_data = self.get_redis_map(layer.name)
+            #     if layer_data is None:
+            #         continue
 
-        map_image = map_image.astype(np.uint8)
-        
-        # Draw additional elements
-        self.draw_car_and_cone(map_image)
-        self.draw_target_line(map_image)
-        self.draw_debug_info(map_image)
-        
-        return map_image
+            #     if layer_name == 'path' and len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
+            #         pass # really nothing?
+            #     elif len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
+            #         pass # really nothing?
+            #     else:
+            #         normalized = cv2.normalize(layer_data, None, 0, 1, cv2.NORM_MINMAX)
+            #         mask = normalized > 0.1
+            #         if layer_name == 'slopes':
+            #             colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), 
+            #                                     cv2.COLORMAP_JET)
+            #             map_image = cv2.addWeighted(map_image, 1.0, colored, layer.alpha, 0)
+            #         else:
+            #             overlay = np.zeros_like(map_image)
+            #             overlay[mask] = np.array(layer.color)
+            #             map_image = cv2.addWeighted(map_image, 1.0, overlay, layer.alpha, 0)
+
+            # map_image = map_image.astype(np.uint8)
+            
+            self.draw_car_and_cone(map_image)
+            self.draw_target_line(map_image)
+            self.draw_debug_info(map_image)
+            
+            return map_image
+
+        except Exception as e:
+            print(f"Error in create_visualization: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def run(self):
         """Main visualization loop"""

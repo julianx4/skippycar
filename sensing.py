@@ -1,3 +1,4 @@
+#old version
 from logging import getLogRecordFactory
 import numpy as np
 import cv2
@@ -45,11 +46,11 @@ draw_obstacles = int(rget_and_float('draw_obstacles', 1))
 max_climb_height = rget_and_float('max_climb_height', 10)
 #----
 
-realsense_depth_W = 640
-realsense_depth_H = 480
+realsense_depth_W = 424
+realsense_depth_H = 240
 
-realsense_color_W = 640
-realsense_color_H = 480
+realsense_color_W = 424
+realsense_color_H = 240
 
 
 mapW = 400
@@ -279,6 +280,8 @@ car_in_world_coord_y_temp = 0
 car_in_world_coord_z_temp = 0
 app_start_time = time.time()
 last_detect = time.time()
+map_to_redis(r,map,'raw_height_map')
+
 try:
     while True:
         tap_target_memory_time = int(rget_and_float('tap_target_memory_time', 1000))
@@ -534,7 +537,7 @@ try:
                 
                 cv2.line(color_image_D435, (line_begin_x, line_begin_y), (line_end_x, line_end_y), (200,200,200), thickness=1)
 
-        map_to_redis(r,map,'map')
+        map_to_redis(r,map,'raw_height_map')
 
         draw_path_on_image(color_image_D435)
         draw_path_costs_on_image(color_image_D435)

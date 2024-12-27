@@ -18,32 +18,25 @@ class RRTNode:
 @dataclass
 class NavigationConfig:
     """Configuration parameters for navigation system"""
-    # Map dimensions
-    map_width: int = 400
-    map_height: int = 400
+    # Map dimensions - align with new resolution
+    map_width: int = 400    # Changed from 800
+    map_height: int = 400   # Changed from 800
     map_base_height: int = 100
     
     # Terrain analysis parameters
-    max_slope_degrees: float = 35.0  # Maximum traversable slope
-    cell_size_cm: float = 2.5  # Each cell represents 2.5cm
-    min_confidence: float = 0.3  # Minimum confidence to consider cell data valid
+    max_slope_degrees: float = 35.0
+    cell_size_cm: float = 2.0  # Changed to match new resolution (2cm per pixel)
+    min_confidence: float = 0.3
+
+    # Navigation parameters (adjusted for new resolution)
+    planning_horizon_m: float = 3.0
+    path_resolution_cm: float = 10.0
+    obstacle_margin_cm: float = 20.0
     
-    # Navigation parameters
-    planning_horizon_m: float = 3.0  # How far ahead to plan in meters
-    path_resolution_cm: float = 10.0  # Resolution for path planning
-    obstacle_margin_cm: float = 20.0  # Safety margin around obstacles
-    
-    # Vehicle parameters
-    min_turning_radius_cm: float = 60.0  # Minimum turning radius
-    vehicle_width_cm: float = 25.0  # Vehicle width for collision checking
-    vehicle_length_cm: float = 55.0  # Vehicle length for collision checking
-    
-    def __post_init__(self):
-        """Convert some parameters to grid cells"""
-        self.planning_horizon_cells = int(self.planning_horizon_m * 100 / self.cell_size_cm)
-        self.path_resolution_cells = int(self.path_resolution_cm / self.cell_size_cm)
-        self.obstacle_margin_cells = int(self.obstacle_margin_cm / self.cell_size_cm)
-        self.min_turning_radius_cells = int(self.min_turning_radius_cm / self.cell_size_cm)
+    # Vehicle parameters (these stay the same in cm)
+    min_turning_radius_cm: float = 60.0
+    vehicle_width_cm: float = 25.0
+    vehicle_length_cm: float = 55.0
 
 class TerrainAnalyzer:
     """Analyzes terrain features from map data"""
@@ -64,7 +57,7 @@ class TerrainAnalyzer:
         )
 
     def get_map_data(self) -> Dict[str, np.ndarray]:
-        """Retrieve all map data from Redis"""
+        """Retrieve all map data from Redis with size verification"""
         maps = {}
         map_keys = {
             'map': 'raw_height_map',
@@ -72,16 +65,32 @@ class TerrainAnalyzer:
             'map_occupancy': 'raw_occupancy_map'
         }
         
+        expected_shape = (self.config.map_height, self.config.map_width)
+        
         for local_name, redis_name in map_keys.items():
             encoded_map = self.redis_client.get(redis_name)
             if encoded_map is None:
-                shape = (self.config.map_height, self.config.map_width)
-                maps[local_name] = np.full(shape, self.config.map_base_height 
-                                        if local_name == 'map' else 0, np.uint8)
+                maps[local_name] = np.full(expected_shape, 
+                                        self.config.map_base_height if local_name == 'map' else 0, 
+                                        np.uint8)
             else:
-                h, w = struct.unpack('>II', encoded_map[:8])
-                maps[local_name] = np.frombuffer(encoded_map, dtype=np.uint8, 
-                                            offset=8).reshape(h, w)
+                try:
+                    h, w = struct.unpack('>II', encoded_map[:8])
+                    # Verify dimensions match our configuration
+                    if (h, w) != expected_shape:
+                        print(f"Warning: {redis_name} has wrong dimensions ({h}x{w}), expected {expected_shape}")
+                        maps[local_name] = np.full(expected_shape,
+                                                self.config.map_base_height if local_name == 'map' else 0,
+                                                np.uint8)
+                        continue
+                    
+                    maps[local_name] = np.frombuffer(encoded_map, dtype=np.uint8,
+                                                offset=8).reshape(h, w)
+                except Exception as e:
+                    print(f"Error decoding {redis_name}: {e}")
+                    maps[local_name] = np.full(expected_shape,
+                                            self.config.map_base_height if local_name == 'map' else 0,
+                                            np.uint8)
         return maps
 
     def compute_slope_map(self, height_map: np.ndarray, confidence_map: np.ndarray) -> np.ndarray:
@@ -158,9 +167,9 @@ class TerrainAnalyzer:
         obstacles[~confidence_mask] = False
         
         # Mark blind spot as traversable
-        car_x, car_y = 200, 250  # Car position
-        blind_spot_width = 40  # Width of blind spot in pixels
-        blind_spot_depth = 16  # ~40cm in pixels (assuming 2.5cm per pixel)
+        car_x, car_y = 100, 125  # Was 200, 250 (halved for new resolution)
+        blind_spot_width = 20    # Was 40 (halved)
+        blind_spot_depth = 8     # Was 16 (halved)
         
         # Create blind spot mask
         y_start = car_y - blind_spot_depth
@@ -216,11 +225,15 @@ class TerrainAnalyzer:
         self._send_overlay_to_redis('overlay_obstacles', obstacle_overlay)
 
     def _send_overlay_to_redis(self, name: str, overlay: np.ndarray) -> None:
-        """Helper to send overlay images to Redis"""
-        h, w = overlay.shape[:2]
-        shape = struct.pack('>II', h, w)
-        encoded = shape + overlay.tobytes()
-        self.redis_client.set(name, encoded)
+        """Helper to send overlay images to Redis with expiry"""
+        try:
+            h, w = overlay.shape[:2]
+            shape = struct.pack('>II', h, w)
+            encoded = shape + overlay.tobytes()
+            # Set data with 2-second expiry
+            self.redis_client.psetex(name, 2000, encoded)
+        except Exception as e:
+            print(f"Error sending overlay {name} to Redis: {e}")
 
 class PathPlanner:
     def __init__(self, config: NavigationConfig):
@@ -249,8 +262,8 @@ class PathPlanner:
         valid_mask = ~obstacle_map & observed_mask
         
         # Create guaranteed valid region around car
-        car_pos = (200, 250)  # Car position
-        safe_radius = 30  # Large enough to guarantee valid start position
+        car_pos = (100, 125)  # Was (200, 250)
+        safe_radius = 15      # Was 30
         
         # Calculate bounds for the car area
         y_start = max(0, car_pos[1] - safe_radius)
@@ -500,18 +513,15 @@ class AdvancedNavigationSystem:
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         self.terrain_analyzer = TerrainAnalyzer(self.config)
         self.path_planner = PathPlanner(self.config)
-        
+            
     def get_target_coords(self):
         """Get target coordinates from Redis and convert to map coordinates"""
         target_data = self.redis_client.get('target_car_coords')
         if target_data:
             coords = struct.unpack('%sf' % 3, target_data)
-            # Convert from meters to map pixels
-            # Note: coords[0] is x (right positive), coords[2] is z (forward positive)
-            map_x = int(coords[0] * 100 + self.config.map_width / 2)
-            map_y = int(self.config.map_height - coords[2] * 100 - 150)  # 150 is car position from bottom
-            # print(f"Target coords (world): x={coords[0]}, z={coords[2]}")
-            # print(f"Target coords (map): x={map_x}, y={map_y}")
+            # Convert from meters to map pixels, adjusted for new resolution
+            map_x = int(coords[0] * 50 + self.config.map_width / 2)  # Was *100
+            map_y = int(self.config.map_height - coords[2] * 50 - 75)  # Was 150 (car position)
             return (map_x, map_y)
         return None
     
@@ -519,47 +529,56 @@ class AdvancedNavigationSystem:
         """Process one complete navigation cycle with debugging"""
         print("\n=== Starting Navigation Cycle ===")
         
-        # Record that navigation is running
+        # Record that navigation is running (1 second timeout)
         self.redis_client.psetex('log_navigation_running', 1000, 'on')
         
-        # Get target position from Redis
-        target_coords = self.get_target_coords()
-        if target_coords is None:
-            print("No target coordinates found")
-            return
-        print(f"Target coordinates: {target_coords}")
+        try:
+            # Get target position from Redis
+            target_coords = self.get_target_coords()
+            if target_coords is None:
+                print("No target coordinates found")
+                return
+            print(f"Target coordinates: {target_coords}")
 
-        # Get map data and analyze terrain 
-        print("Analyzing terrain...")
-        self.terrain_analyzer.analyze_terrain()
-        maps = self.terrain_analyzer.get_map_data()
-        
-        # Get slope and obstacle maps
-        print("Computing slope and obstacle maps...")
-        slope_map = self.terrain_analyzer.compute_slope_map(maps['map'], maps['map_confidence'])
-        obstacle_map = self.terrain_analyzer.identify_obstacles(maps['map'], slope_map, maps['map_confidence'])
-        
-        print("Creating cost map...")
-        cost_map = self.path_planner.create_cost_map(
-            slope_map=slope_map,
-            obstacle_map=obstacle_map,
-            confidence_map=maps['map_confidence']
-        )
-        
-        # Plan path from car position to target
-        start = (200, 250)  # Car position
-        print(f"\nPlanning path from {start} to {target_coords}")
-        path = self.path_planner.plan_path(start, target_coords, cost_map)
-        
-        if path:
-            print(f"Path found with {len(path)} points")
-            path_overlay = self.path_planner.create_path_overlay(path, cost_map.shape)
-            print("Created path overlay")
-            self.terrain_analyzer._send_overlay_to_redis('overlay_path', path_overlay)
-            self.redis_client.expire('overlay_path', 2)
-        else:
-            print("No path found!")
-        
+            # Get map data and analyze terrain 
+            print("Analyzing terrain...")
+            self.terrain_analyzer.analyze_terrain()
+            maps = self.terrain_analyzer.get_map_data()
+            
+            # Verify map dimensions
+            expected_shape = (self.config.map_height, self.config.map_width)
+            if any(m.shape != expected_shape for m in maps.values()):
+                print("Error: Mismatched map dimensions")
+                return
+            
+            # Get slope and obstacle maps
+            print("Computing slope and obstacle maps...")
+            slope_map = self.terrain_analyzer.compute_slope_map(maps['map'], maps['map_confidence'])
+            obstacle_map = self.terrain_analyzer.identify_obstacles(maps['map'], slope_map, maps['map_confidence'])
+            
+            print("Creating cost map...")
+            cost_map = self.path_planner.create_cost_map(
+                slope_map=slope_map,
+                obstacle_map=obstacle_map,
+                confidence_map=maps['map_confidence']
+            )
+            
+            # Plan path from car position to target
+            start = (100, 125)  # Car position (adjusted for 400x400)
+            print(f"\nPlanning path from {start} to {target_coords}")
+            path = self.path_planner.plan_path(start, target_coords, cost_map)
+            
+            if path:
+                print(f"Path found with {len(path)} points")
+                path_overlay = self.path_planner.create_path_overlay(path, cost_map.shape)
+                print("Created path overlay")
+                self.terrain_analyzer._send_overlay_to_redis('overlay_path', path_overlay)
+            else:
+                print("No path found!")
+            
+        except Exception as e:
+            print(f"Error in navigation cycle: {e}")
+            
         print("=== Navigation Cycle Complete ===\n")
 
     def run(self):

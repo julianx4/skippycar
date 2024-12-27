@@ -103,8 +103,32 @@ def create_map():
     last_time = time.time()
     map = redis_to_map(r, "raw_height_map")
 
-    cv2.rectangle(map,(187,242),(213,305),(0, 100, 255),-1) #draw car
-    visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+    # cv2.rectangle(map,(187,242),(213,305),(0, 100, 255),-1) #draw car
+    # visible_cone = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+    # visible_cone = visible_cone.reshape((-1, 1, 2))
+    # cv2.polylines(map, [visible_cone], True, (255,255,255), 1)
+
+    # Fixed car dimensions
+    car_width = 26   # 213 - 187 = 26
+    car_height = 63  # 305 - 242 = 63
+    car_bottom_margin = 125  # 400 - 305 = 95 (distance from bottom)
+
+    # Calculate car position
+    car_left = (mapW - car_width) // 2  # center horizontally
+    car_top = mapH - car_bottom_margin - car_height
+    car_right = car_left + car_width
+    car_bottom = car_top + car_height
+
+    cv2.rectangle(map, (car_left, car_top), (car_right, car_bottom), (0, 100, 255), -1)
+
+    # Draw visible cone
+    visible_cone = np.array([
+        [car_right, car_top],  # right top corner of car
+        [car_left, car_top],   # left top corner of car
+        [0, 0],               # top left corner of map
+        [mapW, 0]             # top right corner of map
+    ], np.int32)
+
     visible_cone = visible_cone.reshape((-1, 1, 2))
     cv2.polylines(map, [visible_cone], True, (255,255,255), 1)
 
@@ -180,22 +204,22 @@ def create_map():
     count = 1
     for text in topic_left:
         count +=1
-        cv2.putText(map, str(text), (20, 300 + 10 * count), font, 0.4, (255,255,255), 1)
+        cv2.putText(map, str(text), (20, mapH-100 + 10 * count), font, 0.4, (255,255,255), 1)
 
     count = 1
     for text in logs_left:
         count +=1
-        cv2.putText(map, str(text), (140, 300 + 10 * count), font, 0.4, (255,255,255), 1)
+        cv2.putText(map, str(text), (140, mapH-100 + 10 * count), font, 0.4, (255,255,255), 1)
 
     count = 1
     for text in topic_right:
         count +=1
-        cv2.putText(map, str(text), (187, 300 + 10 * count), font, 0.4, (255,255,255), 1)
+        cv2.putText(map, str(text), (187, mapH-100 + 10 * count), font, 0.4, (255,255,255), 1)
 
     count = 1
     for text in logs_right:
         count +=1
-        cv2.putText(map, str(text), (310, 300 + 10 * count), font, 0.4, (255,255,255), 1)
+        cv2.putText(map, str(text), (310, mapH-100 + 10 * count), font, 0.4, (255,255,255), 1)
     return map
 
 

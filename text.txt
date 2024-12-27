@@ -1,0 +1,12 @@
+here are two python scripts for my self driving RC car
+
+the old version and the advanced version
+
+the old version uses a raster to only check some points, the new one checks the whole area but very efficient so that it is still fast.
+
+however now i want to increase the map size. doing that makes the faster one too slow again.
+
+i would like to increase the map to 800 length and 800 width for example and have around 6 meters in front of the car and 2 meters behind.
+
+the other problem is that i seem to get strange artefacts. the height map shows 20cm or more deep areas that dont exist, is there maybe something we can tweak on the parameters of the camera or do other 
+

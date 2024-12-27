@@ -1,3 +1,4 @@
+# sensing_advanced.py
 import redis
 import struct
 import pyrealsense2 as rs
@@ -20,6 +21,31 @@ DEBUG_MODE = False  # Set to True to see confidence and occupancy maps
 # |  /
 # | /
 # |/______> right +X
+
+
+class TimingLogger:
+    def __init__(self):
+        self.timings = {}
+        self.start_times = {}
+
+    def start(self, operation):
+        self.start_times[operation] = time.time()
+
+    def end(self, operation):
+        if operation in self.start_times:
+            duration = time.time() - self.start_times[operation]
+            if operation not in self.timings:
+                self.timings[operation] = []
+            self.timings[operation].append(duration)
+            del self.start_times[operation]
+
+    def print_stats(self):
+        print("\nTiming Statistics:")
+        for op, times in self.timings.items():
+            avg = sum(times) / len(times)
+            max_t = max(times)
+            print(f"{op:25s} Avg: {avg*1000:6.1f}ms  Max: {max_t*1000:6.1f}ms")
+        self.timings.clear()
 
 class RedisManager:
     def __init__(self):
@@ -60,10 +86,10 @@ class RedisManager:
 
 class RealSenseManager:
     def __init__(self):
-        self.realsense_depth_W = 424 #640
-        self.realsense_depth_H = 240 # 480
-        self.realsense_color_W = 424
-        self.realsense_color_H = 240
+        self.realsense_depth_W = 424  # Lowest supported depth resolution
+        self.realsense_depth_H = 240
+        self.realsense_color_W = 640  # Keep higher resolution for tag detection
+        self.realsense_color_H = 360
 
         self.pipelineT265 = rs.pipeline()
         self.configT265 = rs.config()
@@ -86,15 +112,21 @@ class RealSenseManager:
         self.pipelineD435 = rs.pipeline()
         self.configD435 = rs.config()
         self.configD435.enable_device('143322074867')
-        self.configD435.enable_stream(rs.stream.depth, self.realsense_depth_W, self.realsense_depth_H, rs.format.z16, 15)
-        self.configD435.enable_stream(rs.stream.color, self.realsense_color_W, self.realsense_depth_H, rs.format.bgr8, 15)
+        self.configD435.enable_stream(rs.stream.depth, self.realsense_depth_W, self.realsense_depth_H, rs.format.z16, 15)  # High fps at low res
+        self.configD435.enable_stream(rs.stream.color, self.realsense_color_W, self.realsense_color_H, rs.format.bgr8, 15)  # Keep color at 15fps
+
 
         self.pipelineD435.start(self.configD435)
 
         self.profileD435 = self.pipelineD435.get_active_profile()
-        self.depth_scale = self.profileD435.get_device().first_depth_sensor().get_depth_scale()
+        # Get depth sensor for optional configuration
+        depth_sensor = self.profileD435.get_device().first_depth_sensor()
+        if depth_sensor.supports(rs.option.laser_power):
+            depth_sensor.set_option(rs.option.laser_power, 360)
+
+        self.depth_scale = depth_sensor.get_depth_scale()
         self.depth_min = 0.2  # meter
-        self.depth_max = 10.0  # meter
+        self.depth_max = 6.0  # meter
 
         self.stream_profile_fish = self.profileT265.get_stream(rs.stream.fisheye, 1)
         self.intrinsics_fish = self.stream_profile_fish.as_video_stream_profile().get_intrinsics()
@@ -124,7 +156,7 @@ class RealSenseManager:
         self.car_in_world_coord_x_previous = 0
         self.car_in_world_coord_z_previous = 0
 
-        self.camera_height = 0.20  # mounting height of the depth camera vs. ground
+        self.camera_height = 0.23  # mounting height of the depth camera vs. ground
 
     def update_realsense_data(self):
         self.get_frames()
@@ -148,6 +180,7 @@ class RealSenseManager:
     
     def get_depth_frame_D435(self):
         self.depth_frame = self.framesD435.get_depth_frame()
+        self.depth_image_D435 = np.asanyarray(self.depth_frame.get_data())
     
     def get_bw_image_T265(self):
         fisheye_frame = self.framesT265.get_fisheye_frame(1)  # Get the fisheye frame from the first camera
@@ -237,8 +270,19 @@ class RealSenseManager:
 
     def color_pixel_to_depth_pixel(self, x, y, cam):
         if cam == "D435":
-            intrinsics_detect = self.intrinsics_color
-            return self._d435_color_to_depth(x, y, intrinsics_detect)
+            # Scale coordinates from color to depth resolution
+            scale_x = self.realsense_depth_W / self.realsense_color_W
+            scale_y = self.realsense_depth_H / self.realsense_color_H
+            
+            # Convert color coordinates to relative position (0-1)
+            rel_x = x / self.realsense_color_W
+            rel_y = y / self.realsense_color_H
+            
+            # Convert to depth coordinates
+            depth_x = int(rel_x * self.realsense_depth_W)
+            depth_y = int(rel_y * self.realsense_depth_H)
+            
+            return depth_x, depth_y
         else:  # T265
             print("Converting T265 pixel to depth pixel")
             # Updated T265 to D435 transformation with improved scaling
@@ -420,55 +464,53 @@ class AprilTagDetector:
 
 class MapManager:
     def __init__(self, width, height, base_height, realsensemanager, redismanager):
-        self.mapW = width
-        self.mapH = height
+        # Change map size but maintain physical dimensions
+        self.cm_per_pixel = 2  # Now 2cm per pixel instead of 1
+        self.mapW = width // self.cm_per_pixel  # 400 instead of 800
+        self.mapH = height // self.cm_per_pixel  # 400 instead of 800
         self.map_base_height = base_height
         
-        # Three-layer map setup
+        # Three-layer map setup with smaller dimensions
         self.map = np.zeros((self.mapW, self.mapH, 3), dtype=np.float32)
-        self.map[:, :, 0] = self.map_base_height  # Height layer initialization
-        self.map[:, :, 1] = 0.5  # Initialize occupancy as unknown (0.5)
-        self.map[:, :, 2] = 0.0  # Initialize confidence as 0
+        self.map[:, :, 0] = self.map_base_height
+        self.map[:, :, 1] = 0.5
+        self.map[:, :, 2] = 0.0
         
-
         self.last_update_times = np.full((self.mapW, self.mapH), time.time())
         self.realsensemanager = realsensemanager
         self.redismanager = redismanager
-
         
-        # Mapping parameters initialization
-        self.confidence_threshold = 0.7
-        self.max_confidence = 10.0
-        self.sensor_noise_model = 0.9
-        self.temporal_decay_rate = 0.1
-        self.occupancy_threshold = 0.7
+        # Update car position for new resolution
+        self.car_position_on_map = 250 // self.cm_per_pixel  # Scale car position too
         
-        self.car_position_on_map = 150
-        self.camera_height = realsensemanager.camera_height
-        
-        self.publish_raw_maps(self.redismanager)
-
-        # Create decay mask for temporal updates
+        # Create new decay mask for smaller map
         self._create_decay_region_mask()
-        
-        self.update_variables()
         
 
     def _create_decay_region_mask(self):
-        """
-        Creates a mask defining the region where temporal decay should be applied.
-        This is typically the area in front of the car that was previously observed.
-        """
+        """Creates decay mask scaled for new resolution"""
         mask = np.zeros((self.mapW, self.mapH), dtype=np.uint8)
+        car_x = self.mapW // 2
+        car_y = self.mapH - self.car_position_on_map
         
-        # Define the decay region (same shape as the previous visible cone)
-        decay_region = np.array([[213, 242], [187, 242], [0, 0], [400, 0]], np.int32)
+        # Use 90 degree FOV to match showmap
+        camera_fov = 93.0
+        fov_rad = np.radians(camera_fov)
+        
+        # Calculate cone width at top of map
+        distance_to_top = car_y  # Distance from camera to top of map
+        cone_width = int(2 * distance_to_top * np.tan(fov_rad / 2))
+        
+        # Define decay region points
+        decay_region = np.array([
+            [car_x + 13//self.cm_per_pixel, car_y],  # Right corner of car front
+            [car_x - 13//self.cm_per_pixel, car_y],  # Left corner of car front
+            [car_x - cone_width//2, 0],              # Left edge at top of map
+            [car_x + cone_width//2, 0]               # Right edge at top of map
+        ], np.int32)
+        
         decay_region = decay_region.reshape((-1, 1, 2))
-        
-        # Fill the decay region polygon with 1s in the mask
         cv2.fillPoly(mask, [decay_region], 1)
-        
-        # Store the mask for decay calculations
         self.decay_region_mask = mask
 
     def bayesian_update_vectorized(self, map_x, map_y, measurement_heights, measurement_confidences):
@@ -512,54 +554,41 @@ class MapManager:
         self.last_update_times[map_y, map_x] = current_time
 
     def update_map_and_obstacles_vectorized(self, depth_frame, max_climb_height, rotation, color_image_D435):
-        # Get depth data as numpy array
-        depth_data = np.asanyarray(depth_frame.get_data())
+        """Optimized map update with reduced resolution"""
+        h_start = int(self.realsensemanager.realsense_depth_H / 4)
+        depth_data = np.asanyarray(depth_frame.get_data())[h_start:, :]
         
         # Create coordinate grids
         h, w = depth_data.shape
-        y_coords, x_coords = np.mgrid[int(h/3):h, 0:w]
+        y_coords, x_coords = np.mgrid[h_start:self.realsensemanager.realsense_depth_H, 
+                                    0:self.realsensemanager.realsense_depth_W].astype(np.float32)
         
-        # Get camera intrinsics
-        fx = self.realsensemanager.intrinsics_depth.fx
-        fy = self.realsensemanager.intrinsics_depth.fy
-        ppx = self.realsensemanager.intrinsics_depth.ppx
-        ppy = self.realsensemanager.intrinsics_depth.ppy
+        # Deproject to 3D
+        Z = depth_data * self.realsensemanager.depth_scale
+        X = (x_coords - self.realsensemanager.intrinsics_depth.ppx) * Z / self.realsensemanager.intrinsics_depth.fx
+        Y = (y_coords - self.realsensemanager.intrinsics_depth.ppy) * Z / self.realsensemanager.intrinsics_depth.fy
         
-        # Vectorized deprojection
-        Z = depth_data[y_coords, x_coords] * self.realsensemanager.depth_scale
-        X = (x_coords - ppx) * Z / fx
-        Y = (y_coords - ppy) * Z / fy
-
-        # Stack coordinates
         points = np.stack((X, Y, Z), axis=-1)
-        
-        # Apply rotation to all points at once
         points_rotated = np.einsum('ij,klj->kli', rotation, points)
+        points_rotated[:, :, 1] = self.realsensemanager.camera_height - points_rotated[:, :, 1]
         
-        # Adjust Y coordinates for camera height
-        points_rotated[:, :, 1] = self.camera_height - points_rotated[:, :, 1]
-        
-        # Convert to map coordinates
-        map_x = (points_rotated[:, :, 0] * 100 + (self.mapW / 2) - 3).astype(int)
-        map_y = (self.mapH - points_rotated[:, :, 2] * 100 - self.car_position_on_map).astype(int)
+        # Scale coordinates for new resolution
+        map_x = (points_rotated[:, :, 0] * 100/self.cm_per_pixel + (self.mapW / 2) - 3).astype(np.int32)
+        map_y = (self.mapH - points_rotated[:, :, 2] * 100/self.cm_per_pixel - self.car_position_on_map).astype(np.int32)
         height_values = 100 + points_rotated[:, :, 1] * 100
         
-        # Create masks for valid points
-        valid_height = points_rotated[:, :, 1] <= self.ignore_above_height
-        valid_coords = (map_x >= 0) & (map_x < self.mapW) & (map_y >= 0) & (map_y < self.mapH)
-        valid_depth = Z > 0
-        valid_mask = valid_height & valid_coords & valid_depth
+        valid_mask = (
+            (points_rotated[:, :, 1] <= self.ignore_above_height) &
+            (map_x >= 0) & (map_x < self.mapW) &
+            (map_y >= 0) & (map_y < self.mapH) &
+            (Z > 0)
+        )
         
-        # Calculate confidence based on distance
-        measurement_confidence = np.maximum(0.1, 1.0 - (Z / 5.0))
-        
-        # Get valid points
         valid_x = map_x[valid_mask]
         valid_y = map_y[valid_mask]
         valid_heights = height_values[valid_mask]
-        valid_confidences = measurement_confidence[valid_mask]
+        valid_confidences = np.maximum(0.1, 1.0 - (Z[valid_mask] / 5.0))
         
-        # Update map using vectorized operation
         self.bayesian_update_vectorized(valid_x, valid_y, valid_heights, valid_confidences)
 
     def update_variables(self):
@@ -583,49 +612,53 @@ class MapManager:
         self.sensor_noise_model = self.redismanager.get_float('sensor_noise_model', 0.9)
         self.max_confidence = self.redismanager.get_float('max_confidence', 10.0)
 
+
     def rotate_and_move_map(self, angle, up, right):
-        car_position_x = self.mapW // 2
-        car_position_y = self.mapH - self.car_position_on_map
-        rotation_center = (car_position_x, car_position_y)
-        
-        # Rotate and move each channel separately
-        result = np.zeros_like(self.map)
-        for channel in range(3):
-            rot_mat = cv2.getRotationMatrix2D(rotation_center, angle, 1.0)
-            result_rot = cv2.warpAffine(self.map[:, :, channel], rot_mat, 
-                                    self.map.shape[1::-1], 
-                                    flags=cv2.INTER_LINEAR, 
-                                    borderValue=self.map_base_height if channel == 0 else 0.5 if channel == 1 else 0)
+        """Optimized single-pass rotation and translation"""
+        if abs(angle) < 0.01 and abs(up) < 0.01 and abs(right) < 0.01:
+            return  # Skip if movement is negligible
             
-            move_mat = np.float32([[1, 0, right], [0, 1, up]])
-            result[:, :, channel] = cv2.warpAffine(result_rot, move_mat, 
-                                                (result_rot.shape[1], result_rot.shape[0]), 
-                                                flags=cv2.INTER_LINEAR, 
-                                                borderValue=self.map_base_height if channel == 0 else 0.5 if channel == 1 else 0)
+        # Combine rotation and translation into single matrix
+        center = (self.mapW // 2, self.mapH - self.car_position_on_map)
+        rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0).astype(np.float32)
         
-        self.map = result
+        # Add translation directly to rotation matrix
+        rot_mat[0, 2] += right
+        rot_mat[1, 2] += up
+        
+        # Single warpAffine for all channels
+        borderValue = np.array([self.map_base_height, 0.5, 0])  # Default values for each channel
+        self.map = cv2.warpAffine(
+            self.map,
+            rot_mat,
+            (self.mapW, self.mapH),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=borderValue
+        )
 
     def decay_unobserved_areas(self):
-        """
-        Decay confidence in previously observed areas that haven't been updated recently
-        """
+        """Fully vectorized decay calculation"""
         current_time = time.time()
-        time_since_update = current_time - self.last_update_times
         
-        # Apply decay only within the defined decay region
-        decay_mask = (self.decay_region_mask == 1)
-        time_since_update_masked = time_since_update * decay_mask
+        # Calculate all decays in one operation
+        # Only calculate within the decay mask to save computation
+        decay_mask = self.decay_region_mask == 1
+        if not np.any(decay_mask):
+            return
+            
+        # Calculate decay factors directly for masked area
+        time_diff = current_time - self.last_update_times[decay_mask]
+        decay_factor = np.exp(-self.temporal_decay_rate * time_diff)
         
-        # Calculate decay factor
-        decay_factor = np.exp(-self.temporal_decay_rate * time_since_update_masked)
+        # Apply decay to confidence values
+        self.map[decay_mask, 2] *= decay_factor
         
-        # Apply decay to confidence
-        self.map[:, :, 2] *= decay_factor
-        
-        # Reset cells with low confidence to unknown state
-        low_confidence_mask = (self.map[:, :, 2] < 0.2)
-        self.map[low_confidence_mask, 1] = 0.5  # Reset occupancy to unknown
-        self.map[low_confidence_mask, 0] = self.map_base_height  # Reset height to base
+        # Fast update of low confidence areas using boolean indexing
+        low_conf = decay_mask & (self.map[:, :, 2] < 0.2)
+        if np.any(low_conf):
+            self.map[low_conf, 1] = 0.5  # Reset occupancy
+            self.map[low_conf, 0] = self.map_base_height  # Reset height
 
     def publish_raw_maps(self, redis_manager):
         """
@@ -646,80 +679,72 @@ rsm = RealSenseManager()
 rdm = RedisManager()
 atd = AprilTagDetector(rsm, rdm)
 mapc = MapManager(
-    width=400, 
-    height=400, 
-    base_height=100, 
-    realsensemanager=rsm, 
+    width=800,   # Keep physical width the same
+    height=800,  # Keep physical height the same
+    base_height=100,
+    realsensemanager=rsm,
     redismanager=rdm
 )
 # pd = PersonDetector(rsm)
 app_start_time = time.time()
 rsm.update_realsense_data()
-# while True:
-#     print(rsm.color_pixel_to_depth_pixel(300,200,"D435"))
-
-#     time.sleep(1)
-#     exit()
+timer = TimingLogger()
+loop_counter = 0 
 while True:
+    timer.start('full_loop')
     loop_start_time = time.time()
     
-    # Update sensor data
+    timer.start('realsense_update')
     rsm.update_realsense_data()
+    timer.end('realsense_update')
+
+    timer.start('map_update')
     mapc.update_variables()
     rsm.get_rotation()
-    
-    # Update map with new sensor data
     mapc.update_map_and_obstacles_vectorized(
         depth_frame=rsm.depth_frame,
         max_climb_height=10,
         rotation=rsm.rotation,
-        color_image_D435=rsm.color_image_D435,
-        #occupancy_increase_rate=0.1,  # Rate at which occupancy probability increases
-        #occupancy_decrease_rate=0.05   # Rate at which occupancy probability decreases
+        color_image_D435=rsm.color_image_D435
     )
-    # Handle AprilTag detection
-    atd.detect_tags()
+    timer.end('map_update')
 
-    # Apply temporal decay to map
+    timer.start('apriltag')
+    atd.detect_tags()
+    timer.end('apriltag')
+
+    timer.start('map_maintenance')
+
+    timer.start('decay')
     mapc.decay_unobserved_areas()
-    
-    # Handle map rotation and movement
+    timer.end('decay')
+
+    timer.start('get_yaw')
     rsm.get_yaw_increment()
+    timer.end('get_yaw')
+
+    timer.start('rotate_move')
     mapc.rotate_and_move_map(
         rsm.yaw_increment, 
         rsm.car_in_world_coord_z_increment * 100, 
         -rsm.car_in_world_coord_x_increment * 100
     )
+    timer.end('rotate_move')
+
+    timer.end('map_maintenance')
     
-    # Send updated map to Redis
+    timer.start('redis_updates')
     mapc.publish_raw_maps(rdm)
-
-    # # Person detection and target tracking
-    # pd.target_from_person_detector()
-    # if pd.target_world_coords is not None:
-    #     target_world_x, target_world_y, target_world_z = pd.target_world_coords
-    #     target_car_x, target_car_y, target_car_z = rsm.world_coord_to_car_coord(
-    #         target_world_x, 
-    #         target_world_y, 
-    #         target_world_z
-    #     )
-    #     rdm.set_data(
-    #         'target_car_coords', 
-    #         struct.pack('%sf' % 3, target_car_x, target_car_y, target_car_z), 
-    #         1000
-    #     )
-
-
-    # Update system status in Redis
     rdm.set_data('log_uptime', time.time() - app_start_time, 1000)
     rdm.set_data('log_sensing_running', 'on', 1000)
     rdm.set_data('current_speed', rsm.speed)
-
-    # Update visualization
     rdm.map_image_to_redis('D435_image', rsm.color_image_D435)
-    rdm.map_image_to_redis('T265_image', rsm.bw_image_T265)
+    #rdm.map_image_to_redis('D435_depth_image', rsm.depth_image_D435)
+    #rdm.map_image_to_redis('T265_image', rsm.bw_image_T265)
+    timer.end('redis_updates')
 
     # Log timing
+    timer.end('full_loop')
     sensing_time = time.time() - loop_start_time
     rdm.set_data('log_sensing_time', sensing_time, 1000)
 
@@ -732,5 +757,9 @@ while True:
         # Send occupancy map for visualization
         occupancy_map = (mapc.map[:, :, 1] * 255).astype(np.uint8)
         rdm.map_image_to_redis('occupancy_map', occupancy_map)
+    
+    loop_counter += 1
+    if loop_counter % 50 == 0:
+        timer.print_stats()
 
     # print(mapc.depth_pixel_horizontal_raster, mapc.depth_pixel_vertical_raster)
