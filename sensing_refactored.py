@@ -662,17 +662,24 @@ class MapManager:
 
     def publish_raw_maps(self, redis_manager):
         """
-        Publish raw map data to Redis without any visualization elements
+        Publish combined height and confidence map to Redis
+        Height: 12 bits (-2048 to +2047 relative to base height)
+        Confidence: 4 bits (0-15 levels)
         """
-        # Convert maps to uint8 for Redis storage
-        height_map = self.map[:, :, 0].astype(np.uint8)
-        confidence_map = (self.map[:, :, 2] * 255).astype(np.uint8)
-        occupancy_map = (self.map[:, :, 1] * 255).astype(np.uint8)
+        # Get height values relative to base height
+        height_relative = self.map[:, :, 0] - self.map_base_height
         
-        # Send raw maps to Redis with clear prefixes
-        redis_manager.map_image_to_redis('raw_height_map', height_map)
-        redis_manager.map_image_to_redis('raw_confidence_map', confidence_map)
-        redis_manager.map_image_to_redis('raw_occupancy_map', occupancy_map)
+        # Scale confidence from 0-1 to 0-15
+        confidence_scaled = (self.map[:, :, 2] * 15).astype(np.uint16)
+        # Clip to ensure we stay within 4 bits
+        confidence_scaled = np.clip(confidence_scaled, 0, 15)
+        
+        # Combine height and confidence:
+        # Shift height left by 4 bits and add confidence
+        combined_map = ((height_relative.astype(np.uint16) & 0x0FFF) << 4) | confidence_scaled
+        
+        # Send combined map to Redis
+        redis_manager.map_image_to_redis('raw_map', combined_map.astype(np.uint16))
 
 
 rsm = RealSenseManager()

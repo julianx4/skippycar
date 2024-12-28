@@ -36,19 +36,27 @@ class MapVisualizer:
         self.config = MapConfig()
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
-        # Define visualization layers with their colors and blend modes
+        # Updated layers to include force vectors
         self.layers = {
-            'base': MapLayer('raw_height_map', (128, 128, 128)),  # Base height map in gray
-            'path': MapLayer('overlay_path', (255, 0, 0), 1.0),  # Path overlay with full opacity
-            'obstacle': MapLayer('overlay_obstacles', (255, 0, 0), 0.7),  # Obstacles in red
-            'slopes': MapLayer('overlay_slopes', (0, 0, 255), 0.5),  # Slopes in blue
-            'confidence': MapLayer('raw_confidence_map', (0, 255, 0), 0.3),  # Confidence in green
+            'base': MapLayer('raw_map', (128, 128, 128)),      # Base map in gray
+            'path': MapLayer('overlay_path', (255, 0, 0), 1.0), # Path overlay (keep for compatibility)
+            'forces': MapLayer('overlay_forces', (0, 0, 255), 0.8)  # Force vectors
         }
+        
+        # Add configuration for confidence threshold
+        self.confidence_threshold = 5  # Show cells with confidence > 8/15
 
         # Status colors
         self.car_color = (0, 100, 255)  # Orange for car
         self.target_line_color = (0, 0, 255)  # Red for target line
         self.text_color = (255, 255, 255)  # White for text
+
+        # Add colors for force vectors
+        self.force_colors = {
+            'attract': (0, 255, 0),    # Green for attractive force
+            'repel': (0, 0, 255),      # Red for repulsive force
+            'total': (255, 255, 0)     # Yellow for total force
+        }
 
     def get_redis_float(self, name: str, default: float = 0) -> float:
         """Helper to get and convert Redis values"""
@@ -58,21 +66,35 @@ class MapVisualizer:
         return float(value)
 
     def get_redis_map(self, name: str) -> Optional[np.ndarray]:
-        """Retrieve map data from Redis with proper type handling"""
+        """Enhanced map retrieval to handle force overlay"""
         encoded = self.redis_client.get(name)
         if encoded is None:
-            return np.full((self.config.height, self.config.width), 
-                          self.config.base_height, np.uint8)
+            return None
             
         h, w = struct.unpack('>II', encoded[:8])
-        data = encoded[8:]
         
-        # Handle RGBA data
-        if len(data) == h * w * 4:
-            return np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
+        # Handle different map types
+        if name == 'raw_map':
+            data = np.frombuffer(encoded[8:], dtype=np.uint16).reshape(h, w)
+            
+            # Extract height and confidence
+            height = ((data >> 4) & 0x0FFF).astype(np.int16)
+            confidence = (data & 0x0F)
+            
+            # Create visualization array
+            vis_map = np.full((h, w), self.config.base_height, np.uint8)
+            confident_cells = confidence > self.confidence_threshold
+            vis_map[confident_cells] = height[confident_cells] + self.config.base_height
+            
+            return vis_map
+            
+        elif name == 'overlay_forces':
+            # Force overlay includes alpha channel
+            return np.frombuffer(encoded[8:], dtype=np.uint8).reshape(h, w, 4)
+            
         else:
-            # Handle single-channel data
-            return np.frombuffer(data, dtype=np.uint8).reshape(h, w)
+            # Other overlays (path, etc.)
+            return np.frombuffer(encoded[8:], dtype=np.uint8).reshape(h, w)
         
     def draw_car_and_cone(self, map_image: np.ndarray) -> None:
         """Draw car rectangle and visible cone using explicit angle from camera position"""
@@ -132,14 +154,13 @@ class MapVisualizer:
             cv2.putText(map_image, str(value), (310, 300 + 10 * count), # Was (310, 300...)
                     self.config.font, 0.3, self.text_color, 1)
 
+
     def _get_debug_info(self) -> Dict:
         """Collect all debug information from Redis"""
         # Get all the required values from Redis
         log_sensing_time = round(self.get_redis_float('log_sensing_time'), 2)
         log_target_distance = round(self.get_redis_float('log_target_distance'), 2)
         log_target_angle = round(self.get_redis_float('log_target_angle'), 2)
-        log_path = self.get_redis_float('path')
-        log_path_min_cost = round(self.get_redis_float('path_min_cost'), 2)
         log_current_speed = round(self.get_redis_float('current_speed'), 2)
         log_in_front_of_car = self.get_redis_float('log_in_front_of_car')
         log_uptime = int(self.get_redis_float('log_uptime'))
@@ -162,6 +183,10 @@ class MapVisualizer:
         else:
             voltages = "0 0"
 
+        # Get potential field control values
+        angle = round(float(self.redis_client.get('angle') or 0), 2)
+        target_speed = round(float(self.redis_client.get('target_speed') or 0), 2)
+
         return {
             'left': {
                 'sensing': status_values['sensing'],
@@ -174,8 +199,8 @@ class MapVisualizer:
                 'battery voltages': voltages,
                 'sensing time': log_sensing_time,
                 'target dist, angle': f"{log_target_distance} {log_target_angle}",
-                'current path': log_path,
-                'path min cost': log_path_min_cost,
+                'angle': angle,
+                'target speed': target_speed,
                 'current speed': log_current_speed,
                 'obstacle height': log_in_front_of_car,
                 'uptime': log_uptime
@@ -202,45 +227,31 @@ class MapVisualizer:
                     self.target_line_color, thickness=2)
 
     def create_visualization(self) -> np.ndarray:
-        """Create complete map visualization with proper layer blending"""
+        """Enhanced visualization with force vectors"""
         try:
-            # Start with base map
-            base_map = self.get_redis_map('raw_height_map')
+            # Get base map with only confident data shown
+            base_map = self.get_redis_map('raw_map')
             map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR)
             
-            # # Process each layer
-            # for layer_name, layer in self.layers.items():
-            #     if not layer.enabled or layer_name == 'base':
-            #         continue
-                
-            #     layer_data = self.get_redis_map(layer.name)
-            #     if layer_data is None:
-            #         continue
-
-            #     if layer_name == 'path' and len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
-            #         pass # really nothing?
-            #     elif len(layer_data.shape) == 3 and layer_data.shape[2] == 4:
-            #         pass # really nothing?
-            #     else:
-            #         normalized = cv2.normalize(layer_data, None, 0, 1, cv2.NORM_MINMAX)
-            #         mask = normalized > 0.1
-            #         if layer_name == 'slopes':
-            #             colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), 
-            #                                     cv2.COLORMAP_JET)
-            #             map_image = cv2.addWeighted(map_image, 1.0, colored, layer.alpha, 0)
-            #         else:
-            #             overlay = np.zeros_like(map_image)
-            #             overlay[mask] = np.array(layer.color)
-            #             map_image = cv2.addWeighted(map_image, 1.0, overlay, layer.alpha, 0)
-
-            # map_image = map_image.astype(np.uint8)
+            # Add path overlay if exists (keep for compatibility)
+            path_data = self.get_redis_map('overlay_path')
+            if path_data is not None and len(path_data.shape) == 3 and path_data.shape[2] == 4:
+                alpha = path_data[:, :, 3:] / 255.0
+                map_image = map_image * (1 - alpha) + path_data[:, :, :3] * alpha
             
+            # Add force vectors overlay
+            force_data = self.get_redis_map('overlay_forces')
+            if force_data is not None and len(force_data.shape) == 3 and force_data.shape[2] == 4:
+                alpha = force_data[:, :, 3:] / 255.0
+                map_image = map_image * (1 - alpha) + force_data[:, :, :3] * alpha
+            
+            # Draw additional visualizations
             self.draw_car_and_cone(map_image)
             self.draw_target_line(map_image)
             self.draw_debug_info(map_image)
             
-            return map_image
-
+            return map_image.astype(np.uint8)
+            
         except Exception as e:
             print(f"Error in create_visualization: {str(e)}")
             import traceback
