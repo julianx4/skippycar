@@ -9,6 +9,7 @@ import time
 import math as m
 from scipy.spatial.transform import Rotation as R
 import curved_paths_coords as pc
+from config import MapConfig
 
 DEBUG_MODE = False  # Set to True to see confidence and occupancy maps
 
@@ -464,13 +465,12 @@ class AprilTagDetector:
 
 class MapManager:
     def __init__(self, width, height, base_height, realsensemanager, redismanager):
-        # Change map size but maintain physical dimensions
-        self.cm_per_pixel = 2  # Now 2cm per pixel instead of 1
-        self.mapW = width // self.cm_per_pixel  # 400 instead of 800
-        self.mapH = height // self.cm_per_pixel  # 400 instead of 800
+        # Initialize config
+        self.map_config = MapConfig()
+        self.mapW, self.mapH, self.cm_per_pixel = self.map_config.get_dimensions()
         self.map_base_height = base_height
         
-        # Three-layer map setup with smaller dimensions
+        # Three-layer map setup
         self.map = np.zeros((self.mapW, self.mapH, 3), dtype=np.float32)
         self.map[:, :, 0] = self.map_base_height
         self.map[:, :, 1] = 0.5
@@ -480,10 +480,9 @@ class MapManager:
         self.realsensemanager = realsensemanager
         self.redismanager = redismanager
         
-        # Update car position for new resolution
-        self.car_position_on_map = 250 // self.cm_per_pixel  # Scale car position too
+        # Car position is now from config
+        self.car_position_on_map = self.map_config.car_position_on_map
         
-        # Create new decay mask for smaller map
         self._create_decay_region_mask()
         
 

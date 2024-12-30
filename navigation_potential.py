@@ -6,28 +6,36 @@ import cv2
 import time
 from dataclasses import dataclass
 from typing import Tuple, Optional
+from config import MapConfig
 
 @dataclass
 class NavigationConfig:
-    """Simplified configuration for potential field navigation"""
-    # Map dimensions (matching sensing_advanced.py)
-    map_width: int = 400
-    map_height: int = 400
+    """Configuration for potential field navigation"""
     map_base_height: int = 100
-    cm_per_pixel: float = 2.0
     
-    # Force field parameters
-    attract_gain: float = 1.5         # Strong attraction to target
-    repel_gain: float = 0.2          # Gentle lateral repulsion
-    repel_threshold: float = 35.0    # Reaction distance to obstacles
-    target_stop_distance: float = 50.0  # Distance to stop from target (in pixels)
-    max_force: float = 3.0           # Maximum total force
-    smoothing_factor: float = 0.2    # Smoothing for force changes
-    
-    # Vehicle parameters (in cm)
-    vehicle_width: float = 25.0
-    vehicle_length: float = 55.0
-    min_turning_radius: float = 60.0
+    def __post_init__(self):
+        # Initialize MapConfig for dimensions
+        self.map_config = MapConfig()
+        self.map_width, self.map_height, self.cm_per_pixel = self.map_config.get_dimensions()
+        
+        # Force field parameters
+        self.attract_gain: float = 1.5
+        self.repel_gain: float = 0.2
+        
+        # Scale distance parameters based on resolution
+        base_repel = 35.0  # Base values at 2cm resolution
+        base_stop = 50.0
+        scale = 2.0 / self.cm_per_pixel
+        
+        self.repel_threshold = base_repel * scale
+        self.target_stop_distance = base_stop * scale
+        self.max_force = 3.0
+        self.smoothing_factor = 0.2
+        
+        # Vehicle parameters (in cm)
+        self.vehicle_width = 25.0
+        self.vehicle_length = 55.0
+        self.min_turning_radius = 60.0
 
 class PotentialFieldNavigation:
     def __init__(self):
@@ -157,29 +165,33 @@ class PotentialFieldNavigation:
         """Create visualization overlay showing forces"""
         overlay = np.zeros((self.config.map_height, self.config.map_width, 4), dtype=np.uint8)
         
+        # Scale force vectors - make them shorter and thinner
+        scale_factor = 20  # Reduce from 100 to make vectors shorter
+        arrow_thickness = 1  # Reduce from default thickness
+        
         # Draw attractive force in green (points toward target)
         if target_pos is not None:
             cv2.arrowedLine(
                 overlay,
                 tuple(map(int, self.car_pos)),
-                tuple(map(int, self.car_pos + self.attract_force * 100)),
-                (0, 255, 0, 255), 2
+                tuple(map(int, self.car_pos + self.attract_force * scale_factor)),
+                (0, 255, 0, 255), arrow_thickness
             )
         
-        # Draw repulsive force in red (points away from obstacles)
+        # Draw repulsive force in red
         cv2.arrowedLine(
             overlay,
             tuple(map(int, self.car_pos)),
-            tuple(map(int, self.car_pos + self.repel_force * 100)),
-            (0, 0, 255, 255), 2
+            tuple(map(int, self.car_pos + self.repel_force * scale_factor)),
+            (0, 0, 255, 255), arrow_thickness
         )
         
-        # Draw total force in blue (combination of attract and repel)
+        # Draw total force in blue
         cv2.arrowedLine(
             overlay,
             tuple(map(int, self.car_pos)),
-            tuple(map(int, self.car_pos + self.total_force * 100)),
-            (255, 0, 0, 255), 2
+            tuple(map(int, self.car_pos + self.total_force * scale_factor)),
+            (255, 0, 0, 255), arrow_thickness
         )
         
         return overlay
@@ -254,7 +266,7 @@ class PotentialFieldNavigation:
             force_overlay = self.create_force_visualization(target_pos)
             h, w = force_overlay.shape[:2]
             encoded_overlay = struct.pack('>II', h, w) + force_overlay.tobytes()
-            self.redis_client.set('overlay_forces', encoded_overlay)
+            self.redis_client.psetex('overlay_forces', 300, encoded_overlay)
             
         except Exception as e:
             print(f"Error in navigation cycle: {e}")

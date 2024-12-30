@@ -6,20 +6,15 @@ import cv2
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional, List, Tuple
+from config import MapConfig
 
 @dataclass
-class MapConfig:
-    """Configuration for map visualization"""
-    width: int = 400    
-    height: int = 400   
-    base_height: int = 100
+class ShowMapConfig:
+    """Configuration for visualization parameters that don't depend on resolution"""
     map_refresh: float = 0.2
     font = cv2.FONT_HERSHEY_SIMPLEX
-    cm_per_pixel: int = 2  
-    camera_fov: float = 90.0  # Camera field of view in degrees
-    car_position_on_map: int = 250 // cm_per_pixel  # Same as sensing_advanced.py
-    
-
+    camera_fov: float = 90.0
+    base_height: int = 100
 
 class MapLayer:
     """Represents a single visualization layer"""
@@ -30,10 +25,21 @@ class MapLayer:
         self.data: Optional[np.ndarray] = None
         self.enabled = True
 
-
 class MapVisualizer:
     def __init__(self):
-        self.config = MapConfig()
+        # Get map dimensions from MapConfig
+        map_config = MapConfig()
+        
+        # Get visualization parameters from ShowMapConfig
+        show_config = ShowMapConfig()
+        
+        # Combine them
+        self.config = show_config
+        self.config.width = map_config.width
+        self.config.height = map_config.height
+        self.config.cm_per_pixel = map_config.get_resolution()
+        self.config.car_position_on_map = 250 // self.config.cm_per_pixel
+        
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
         # Updated layers to include force vectors
@@ -96,65 +102,68 @@ class MapVisualizer:
             # Other overlays (path, etc.)
             return np.frombuffer(encoded[8:], dtype=np.uint8).reshape(h, w)
         
-    def draw_car_and_cone(self, map_image: np.ndarray) -> None:
-        """Draw car rectangle and visible cone using explicit angle from camera position"""
-        # Car dimensions
-        car_width_pixels = 13    # 25cm / 2cm per pixel
-        car_length_pixels = 28   # 55cm / 2cm per pixel
+    def draw_car_and_cone(self, map_image: np.ndarray, scale: float) -> None:
+        # Car dimensions in display pixels
+        car_width_pixels = int(25 / self.config.cm_per_pixel * scale)
+        car_length_pixels = int(55 / self.config.cm_per_pixel * scale)
         
-        # Car position - FIXED to match terrain mapping
-        car_center_x = self.config.width // 2
-        car_y = self.config.height - self.config.car_position_on_map
+        # Car position in display coordinates
+        car_center_x = int(self.config.width / 2 * scale)
+        car_y = int((self.config.height - self.config.car_position_on_map) * scale)
         
-        # Draw car rectangle in orange
-        cv2.rectangle(map_image, 
-                    (car_center_x - car_width_pixels//2, car_y + car_length_pixels),
-                    (car_center_x + car_width_pixels//2, car_y),                  
-                    self.car_color, -1)
+        # Draw car rectangle
+        top_left = (
+            int(car_center_x - car_width_pixels//2),
+            int(car_y + car_length_pixels)
+        )
+        bottom_right = (
+            int(car_center_x + car_width_pixels//2),
+            int(car_y)
+        )
+        cv2.rectangle(map_image, top_left, bottom_right, self.car_color, -1)
         
-        # Calculate cone from front of car 
-        camera_y = car_y #+ car_length_pixels  # Camera at front of car
-        
-        # Calculate cone points based on FOV angle
-        fov_rad = np.radians(self.config.camera_fov)
+        # Draw cone
+        camera_y = car_y
         distance_to_top = camera_y
-        
-        # Calculate cone width at map top using trigonometry
+        fov_rad = np.radians(self.config.camera_fov)
         cone_width = int(2 * distance_to_top * np.tan(fov_rad / 2))
         
-        # Define cone vertices starting from camera position
         visible_cone = np.array([
-            [car_center_x, camera_y],  # Camera position (cone apex)
-            [car_center_x - cone_width//2, 0],  # Left edge at top of map
-            [car_center_x + cone_width//2, 0]   # Right edge at top of map
+            [car_center_x, camera_y],
+            [car_center_x - cone_width//2, 0],
+            [car_center_x + cone_width//2, 0]
         ], np.int32)
         
         visible_cone = visible_cone.reshape((-1, 1, 2))
         cv2.polylines(map_image, [visible_cone], True, (255, 255, 255), 1)
-        
+
     def draw_debug_info(self, map_image: np.ndarray) -> None:
-        """Draw debug information with adjusted positions"""
+        # Debug info drawn at fixed positions in 800x800 window
         debug_info = self._get_debug_info()
         
         # Draw left column (system status)
         count = 1
         for text, value in debug_info['left'].items():
             count += 1
-            cv2.putText(map_image, str(text), (20, 300 + 10 * count),  # Was (20, 300...)
-                    self.config.font, 0.3, self.text_color, 1)       # Was 0.4
-            cv2.putText(map_image, str(value), (140, 300 + 10 * count), # Was (140, 300...)
-                    self.config.font, 0.3, self.text_color, 1)
+            # Positions now relative to 800x800 window
+            position1 = (40, 600 + 20 * count)
+            position2 = (280, 600 + 20 * count)
+            cv2.putText(map_image, str(text), position1,
+                    self.config.font, 0.6, self.text_color, 1)
+            cv2.putText(map_image, str(value), position2,
+                    self.config.font, 0.6, self.text_color, 1)
 
         # Draw right column (measurements)
         count = 1
         for text, value in debug_info['right'].items():
             count += 1
-            cv2.putText(map_image, str(text), (187, 300 + 10 * count),  # Was (187, 300...)
-                    self.config.font, 0.3, self.text_color, 1)       # Was 0.4
-            cv2.putText(map_image, str(value), (310, 300 + 10 * count), # Was (310, 300...)
-                    self.config.font, 0.3, self.text_color, 1)
-
-
+            position1 = (374, 600 + 20 * count)
+            position2 = (620, 600 + 20 * count)
+            cv2.putText(map_image, str(text), position1,
+                    self.config.font, 0.6, self.text_color, 1)
+            cv2.putText(map_image, str(value), position2,
+                    self.config.font, 0.6, self.text_color, 1)
+            
     def _get_debug_info(self) -> Dict:
         """Collect all debug information from Redis"""
         # Get all the required values from Redis
@@ -208,50 +217,57 @@ class MapVisualizer:
         }
 
 
-    def draw_target_line(self, map_image: np.ndarray) -> None:
-        """Draw line to target with scaled coordinates"""
+    def draw_target_line(self, map_image: np.ndarray, scale: float) -> None:
         target_coords = self.redis_client.get('target_car_coords')
         if target_coords is not None:
             coords = np.array(struct.unpack('%sf' % 3, target_coords))
             
-            # Scale coordinates: 50 pixels per meter (since we're at 2cm/pixel)
-            mx = int(coords[0] * 50 + self.config.width / 2)
-            my = int(self.config.height - self.config.car_position_on_map - coords[2] * 50)
+            # Scale coordinates to display size
+            pixels_per_meter = 100 / self.config.cm_per_pixel * scale
+            mx = int(coords[0] * pixels_per_meter + self.config.width * scale / 2)
+            my = int(self.config.height * scale - self.config.car_position_on_map * scale - coords[2] * pixels_per_meter)
             
             # Start from car front
-            car_y = self.config.height - self.config.car_position_on_map
+            car_y = int((self.config.height - self.config.car_position_on_map) * scale)
+            start_point = (int(self.config.width * scale // 2), car_y)
+            end_point = (mx, my)
             
-            cv2.line(map_image, 
-                    (self.config.width//2, car_y),  # Start from car front center
-                    (mx, my),
-                    self.target_line_color, thickness=2)
+            cv2.line(map_image, start_point, end_point, self.target_line_color, thickness=2)
 
     def create_visualization(self) -> np.ndarray:
         """Enhanced visualization with force vectors"""
         try:
             # Get base map with only confident data shown
             base_map = self.get_redis_map('raw_map')
+            
+            # Scale up the map to 800x800 display size
+            base_map = cv2.resize(base_map, (800, 800), interpolation=cv2.INTER_NEAREST)
             map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR)
             
-            # Add path overlay if exists (keep for compatibility)
+            # Add path overlay if exists
             path_data = self.get_redis_map('overlay_path')
             if path_data is not None and len(path_data.shape) == 3 and path_data.shape[2] == 4:
+                path_data = cv2.resize(path_data, (800, 800), interpolation=cv2.INTER_NEAREST)
                 alpha = path_data[:, :, 3:] / 255.0
                 map_image = map_image * (1 - alpha) + path_data[:, :, :3] * alpha
             
             # Add force vectors overlay
             force_data = self.get_redis_map('overlay_forces')
             if force_data is not None and len(force_data.shape) == 3 and force_data.shape[2] == 4:
+                force_data = cv2.resize(force_data, (800, 800), interpolation=cv2.INTER_NEAREST)
                 alpha = force_data[:, :, 3:] / 255.0
                 map_image = map_image * (1 - alpha) + force_data[:, :, :3] * alpha
             
-            # Draw additional visualizations
-            self.draw_car_and_cone(map_image)
-            self.draw_target_line(map_image)
-            self.draw_debug_info(map_image)
+            # Calculate scale factor for drawing
+            scale = 800 / self.config.width  # This will be 5 when internal res is 160x160
+            
+            # Draw with scaled coordinates
+            self.draw_car_and_cone(map_image, scale)
+            self.draw_target_line(map_image, scale)
+            self.draw_debug_info(map_image)  # Debug info at fixed positions
             
             return map_image.astype(np.uint8)
-            
+                
         except Exception as e:
             print(f"Error in create_visualization: {str(e)}")
             import traceback
