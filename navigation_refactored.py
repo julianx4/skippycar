@@ -21,7 +21,7 @@ class NavigationConfig:
     min_speed_increase_factor: float = 1.5
     square_range: int = 6
     obstacle_stop_height: float = 15.0
-    target_stop_distance: float = 0.9
+    target_stop_distance: float = 100.0  # Changed to 100cm (1 meter)
     square_to_square_cost_factor: float = 10.0
     map_base_height: int = 100
 
@@ -47,6 +47,116 @@ class NavigationSystem:
         self.in_front_of_car = 0
         self.target_speed = None
         self.in_motion_start = time.time()
+        self.car_position = (self.map_dimensions[0] // 2, self.map_dimensions[1] - 250)
+
+    def _publish_navigation_overlay(self, paths: List[dict]) -> None:
+        """Publish navigation visualization overlay to Redis"""
+        overlay = np.zeros((*self.map_dimensions, 4), dtype=np.uint8)
+        
+        # Find best path (lowest cost)
+        best_path_idx = min(range(len(paths)), key=lambda i: paths[i]['cost'])
+        
+        for i, path_data in enumerate(paths):
+            points = path_data['points']
+            cost = path_data['cost']
+            
+            if len(points) < 2:
+                continue
+                
+            # Normalize cost for visualization (adjust range as needed)
+            cost_normalized = max(0.3, min(1.0, 1.0 - (cost / 1000)))
+            
+            if i == best_path_idx:
+                # Best path in green
+                color = (0, 255, 0, int(255 * cost_normalized))
+                thickness = 2
+            else:
+                # Other paths in blue/red based on cost
+                if cost < 500:  # Adjust threshold as needed
+                    color = (50, 50, 200, int(180 * cost_normalized))  # Blue for good paths
+                else:
+                    color = (200, 50, 50, int(180 * cost_normalized))  # Red for bad paths
+                thickness = 1
+
+            # Convert points to numpy array for drawing
+            points = np.array(points, dtype=np.int32)
+            
+            # Draw path segments
+            for j in range(len(points) - 1):
+                cv2.line(overlay,
+                        tuple(points[j]),
+                        tuple(points[j + 1]),
+                        color,
+                        thickness)
+
+        # Send to Redis
+        h, w = overlay.shape[:2]
+        shape = struct.pack('>II', h, w)
+        encoded = shape + overlay.tobytes()
+        self.redis_client.psetex('overlay_navigation', 1000, encoded)
+
+    def calculate_path_costs(self, angle: float) -> PathCosts:
+        """Calculate costs for all possible paths"""
+        path_costs = PathCosts(11)
+        map_data = self.get_map_data()
+        
+        paths_visualization = []  # Store path data for visualization
+        
+        for path_idx in range(11):
+            path_points = self._calculate_single_path_cost(
+                path_idx, angle, map_data, path_costs
+            )
+            
+            # Store path data for visualization
+            paths_visualization.append({
+                'points': path_points,
+                'cost': path_costs.costs[path_idx]
+            })
+
+        # Publish visualization data
+        self._publish_navigation_overlay(paths_visualization)
+        
+        return path_costs
+
+    def _calculate_single_path_cost(
+        self, 
+        path_idx: int, 
+        target_angle: float, 
+        map_data: np.ndarray, 
+        path_costs: PathCosts
+    ) -> List[Tuple[int, int]]:
+        """Calculate cost for a single path and return path points for visualization"""
+        path_lookup, direction = self._get_path_parameters(path_idx)
+        
+        # Initialize cost components and path points
+        square_to_square_cost = 0
+        max_height = 0
+        path_points = []
+        
+        # Calculate angle deviation cost
+        path_angle = -pc.paths[path_lookup]['target_angle'] if direction == -1 else pc.paths[path_lookup]['target_angle']
+        angle_cost = math.pow(
+            abs(path_angle - target_angle) * self.config.angle_deviation_cost_factor,
+            self.config.angle_deviation_expo
+        )
+
+        # Calculate costs for each square in the path
+        for square in range(self.config.square_range):
+            poly = self._get_path_polygon(path_lookup, square, direction)
+            square_costs = self._calculate_square_costs(
+                poly, map_data, max_height, square
+            )
+            
+            max_height = square_costs['max_height']
+            square_to_square_cost += square_costs['cost']
+            path_costs.heights[path_idx].append(max_height)
+            
+            # Store center point of polygon for visualization
+            center_point = poly.mean(axis=0).astype(int)
+            path_points.append(center_point)
+
+        path_costs.costs[path_idx] = angle_cost + square_to_square_cost
+        return path_points
 
     def get_redis_float(self, name: str, default: float = None) -> float:
         """Retrieve float value from Redis with fallback default"""
@@ -62,7 +172,7 @@ class NavigationSystem:
         self.config.min_speed_increase_factor = self.get_redis_float('min_speed_increase_factor', 1.5)
         self.config.square_range = int(self.get_redis_float('square_range', 6))
         self.config.obstacle_stop_height = self.get_redis_float('obstacle_stop_height', 15)
-        self.config.target_stop_distance = self.get_redis_float('target_stop_distance', 0.9)
+        self.config.target_stop_distance = self.get_redis_float('target_stop_distance', 100)
         self.config.square_to_square_cost_factor = self.get_redis_float('square_to_square_cost_factor', 10)
         self.config.map_base_height = int(self.get_redis_float('map_base_height', 100))
 
@@ -95,52 +205,6 @@ class NavigationSystem:
         
         return angle, distance
 
-    def calculate_path_costs(self, angle: float) -> PathCosts:
-        """Calculate costs for all possible paths"""
-        path_costs = PathCosts(11)
-        map_data = self.get_map_data()
-
-        for path_idx in range(11):
-            self._calculate_single_path_cost(
-                path_idx, angle, map_data, path_costs
-            )
-
-        return path_costs
-
-    def _calculate_single_path_cost(
-        self, 
-        path_idx: int, 
-        target_angle: float, 
-        map_data: np.ndarray, 
-        path_costs: PathCosts
-    ) -> None:
-        """Calculate cost for a single path"""
-        path_lookup, direction = self._get_path_parameters(path_idx)
-        
-        # Initialize cost components
-        square_to_square_cost = 0
-        max_height = 0
-        
-        # Calculate angle deviation cost
-        path_angle = -pc.paths[path_lookup]['target_angle'] if direction == -1 else pc.paths[path_lookup]['target_angle']
-        angle_cost = math.pow(
-            abs(path_angle - target_angle) * self.config.angle_deviation_cost_factor,
-            self.config.angle_deviation_expo
-        )
-
-        # Calculate costs for each square in the path
-        for square in range(self.config.square_range):
-            poly = self._get_path_polygon(path_lookup, square, direction)
-            square_costs = self._calculate_square_costs(
-                poly, map_data, max_height, square
-            )
-            
-            max_height = square_costs['max_height']
-            square_to_square_cost += square_costs['cost']
-            path_costs.heights[path_idx].append(max_height)
-
-        path_costs.costs[path_idx] = angle_cost + square_to_square_cost
-
     def _get_path_parameters(self, path_idx: int) -> Tuple[int, int]:
         """Get path lookup index and direction"""
         if path_idx > 5:
@@ -155,7 +219,7 @@ class NavigationSystem:
         for i in range(2):
             for j in range(2):
                 x = direction * coords[square + i][j * 2] / 10 + self.map_dimensions[0] / 2
-                y = self.map_dimensions[1] - coords[square + i][j * 2 + 1] / 10 - 150
+                y = self.map_dimensions[1] - coords[square + i][j * 2 + 1] / 10 - 300
                 points.append([int(x), int(y)])
                 
         return np.array(points)
@@ -261,15 +325,16 @@ class NavigationSystem:
         # Get target information
         angle, self.distance = self.get_angle_and_distance_to_target()
         
-        if angle is None:
+        # Stop if no target or within stop distance
+        if angle is None or self.distance < self.config.target_stop_distance:
             self.redis_client.psetex('path', 1000, -1)
+            self.redis_client.psetex('angle', 1000, 0)
+            self.redis_client.psetex('target_speed', 1000, 0)
             return
             
         # Calculate path costs and update control
         path_costs = self.calculate_path_costs(angle)
         self.update_vehicle_control(path_costs)
-        
-
 
     def run(self) -> None:
         """Main navigation loop"""

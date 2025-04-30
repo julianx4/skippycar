@@ -64,6 +64,13 @@ class MapVisualizer:
             'total': (255, 255, 0)     # Yellow for total force
         }
 
+        # Add navigation colors to existing colors
+        self.nav_colors = {
+            'scanned_path': (50, 50, 200),   # Light blue for scanned paths
+            'best_path': (0, 255, 0),        # Green for best path
+            'rejected_path': (200, 50, 50)    # Red for rejected paths
+        }
+
     def get_redis_float(self, name: str, default: float = 0) -> float:
         """Helper to get and convert Redis values"""
         value = self.redis_client.get(name)
@@ -79,6 +86,11 @@ class MapVisualizer:
             
         h, w = struct.unpack('>II', encoded[:8])
         
+        # Add navigation overlay handling
+        if name == 'overlay_navigation':
+            # Navigation overlay includes path scores and selection
+            return np.frombuffer(encoded[8:], dtype=np.uint8).reshape(h, w, 4)
+            
         # Handle different map types
         if name == 'raw_map':
             data = np.frombuffer(encoded[8:], dtype=np.uint16).reshape(h, w)
@@ -192,9 +204,9 @@ class MapVisualizer:
         else:
             voltages = "0 0"
 
-        # Get potential field control values
-        angle = round(float(self.redis_client.get('angle') or 0), 2)
-        target_speed = round(float(self.redis_client.get('target_speed') or 0), 2)
+        # Get navigation values
+        angle = round(self.get_redis_float('angle', 0), 2)
+        target_speed = round(self.get_redis_float('target_speed', 0), 2)
 
         return {
             'left': {
@@ -216,6 +228,17 @@ class MapVisualizer:
             }
         }
 
+    def add_debug_visualizations(self, map_image: np.ndarray) -> None:
+        """Add debug visualizations to the map image"""
+        # Get debug cone mask if it exists
+        debug_cone = self.get_redis_map('debug_cone_mask')
+        if debug_cone is not None:
+            # Resize to match display size
+            debug_cone = cv2.resize(debug_cone, (800, 800), interpolation=cv2.INTER_NEAREST)
+            # Overlay in blue with 50% transparency
+            blue_overlay = np.zeros_like(map_image)
+            blue_overlay[debug_cone > 0] = [255, 0, 0]  # Blue color
+            cv2.addWeighted(map_image, 0.7, blue_overlay, 0.3, 0, map_image)
 
     def draw_target_line(self, map_image: np.ndarray, scale: float) -> None:
         target_coords = self.redis_client.get('target_car_coords')
@@ -235,14 +258,18 @@ class MapVisualizer:
             cv2.line(map_image, start_point, end_point, self.target_line_color, thickness=2)
 
     def create_visualization(self) -> np.ndarray:
-        """Enhanced visualization with force vectors"""
+        """Enhanced visualization with navigation paths"""
         try:
             # Get base map with only confident data shown
             base_map = self.get_redis_map('raw_map')
+            if base_map is None or base_map.size == 0:
+                # Create a blank base map if no data
+                base_map = np.full((self.config.height, self.config.width), self.config.base_height, dtype=np.uint8)
+                print("Warning: No map data received from Redis, using blank map")
             
             # Scale up the map to 800x800 display size
-            base_map = cv2.resize(base_map, (800, 800), interpolation=cv2.INTER_NEAREST)
-            map_image = cv2.cvtColor(base_map, cv2.COLOR_GRAY2BGR)
+            map_image = cv2.resize(base_map, (800, 800), interpolation=cv2.INTER_NEAREST)
+            map_image = cv2.cvtColor(map_image, cv2.COLOR_GRAY2BGR)
             
             # Add path overlay if exists
             path_data = self.get_redis_map('overlay_path')
@@ -251,28 +278,62 @@ class MapVisualizer:
                 alpha = path_data[:, :, 3:] / 255.0
                 map_image = map_image * (1 - alpha) + path_data[:, :, :3] * alpha
             
-            # Add force vectors overlay
-            force_data = self.get_redis_map('overlay_forces')
-            if force_data is not None and len(force_data.shape) == 3 and force_data.shape[2] == 4:
-                force_data = cv2.resize(force_data, (800, 800), interpolation=cv2.INTER_NEAREST)
-                alpha = force_data[:, :, 3:] / 255.0
-                map_image = map_image * (1 - alpha) + force_data[:, :, :3] * alpha
-            
             # Calculate scale factor for drawing
-            scale = 800 / self.config.width  # This will be 5 when internal res is 160x160
+            scale = 800 / self.config.width
             
             # Draw with scaled coordinates
             self.draw_car_and_cone(map_image, scale)
             self.draw_target_line(map_image, scale)
-            self.draw_debug_info(map_image)  # Debug info at fixed positions
+            self.draw_debug_info(map_image)
+            
+            # Add navigation visualization if available
+            nav_data = self.get_redis_map('overlay_navigation')
+            if nav_data is not None and len(nav_data.shape) == 3 and nav_data.shape[2] == 4:
+                nav_data = cv2.resize(nav_data, (800, 800), interpolation=cv2.INTER_NEAREST)
+                alpha = nav_data[:, :, 3:] / 255.0
+                map_image = map_image * (1 - alpha) + nav_data[:, :, :3] * alpha
+            
+            # Draw additional navigation info
+            self.draw_navigation_info(map_image)
             
             return map_image.astype(np.uint8)
                 
         except Exception as e:
             print(f"Error in create_visualization: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
+            return self._create_error_image(str(e))
+
+    def _create_error_image(self, error_text: str) -> np.ndarray:
+        """Create an error image with the error message"""
+        error_image = np.zeros((800, 800, 3), dtype=np.uint8)
+        cv2.putText(error_image, "Error:", (50, 350),
+                   self.config.font, 1.0, (0, 0, 255), 2)
+        cv2.putText(error_image, error_text, (50, 400),
+                   self.config.font, 0.8, (0, 0, 255), 1)
+        return error_image
+
+    def draw_navigation_info(self, map_image: np.ndarray) -> None:
+        """Draw navigation-related debug information"""
+        # Get navigation parameters
+        angle = self.get_redis_float('angle', 0)
+        target_speed = self.get_redis_float('target_speed', 0)
+        look_ahead = self.get_redis_float('nav_look_ahead', 0)
+        scan_width = self.get_redis_float('nav_scan_width', 0)
+        
+        # Draw navigation status (in top-left, above existing debug info)
+        y_offset = 50  # Start above existing debug info
+        cv2.putText(map_image, f"Nav Status:", 
+                    (40, y_offset), self.config.font, 0.6, (255, 255, 255), 1)
+        cv2.putText(map_image, f"Steering: {angle:.1f}°", 
+                    (40, y_offset + 20), self.config.font, 0.6, (255, 255, 255), 1)
+        cv2.putText(map_image, f"Target Speed: {target_speed:.1f}", 
+                    (40, y_offset + 40), self.config.font, 0.6, (255, 255, 255), 1)
+        
+        # Draw scan parameters if available
+        if look_ahead > 0 and scan_width > 0:
+            cv2.putText(map_image, f"Look Ahead: {look_ahead:.0f}cm", 
+                        (40, y_offset + 60), self.config.font, 0.6, (255, 255, 255), 1)
+            cv2.putText(map_image, f"Scan Width: {scan_width:.0f}cm", 
+                        (40, y_offset + 80), self.config.font, 0.6, (255, 255, 255), 1)
 
     def run(self):
         """Main visualization loop"""

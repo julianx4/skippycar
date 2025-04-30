@@ -5,49 +5,33 @@ import struct
 import cv2
 import time
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 from config import MapConfig
 
 @dataclass
 class NavigationConfig:
-    """Configuration for potential field navigation"""
-    map_base_height: int = 100
-    
-    def __post_init__(self):
+    """Configuration for navigation"""
+    def __init__(self):
         # Initialize MapConfig for dimensions
         self.map_config = MapConfig()
         self.map_width, self.map_height, self.cm_per_pixel = self.map_config.get_dimensions()
         
-        # Force field parameters
-        self.attract_gain: float = 1.5
-        self.repel_gain: float = 0.2
+        # Navigation parameters
+        self.look_ahead_distance = 150  # cm
+        self.scan_width = 100  # cm
+        self.angle_range = 60  # degrees total scan range (+/- 30 degrees)
+        self.num_scan_angles = 7  # Number of angles to check
+        self.target_speed = 20.0  # Fixed speed
+        self.smoothing_factor = 0.3  # Steering angle smoothing
         
-        # Scale distance parameters based on resolution
-        base_repel = 35.0  # Base values at 2cm resolution
-        base_stop = 50.0
-        scale = 2.0 / self.cm_per_pixel
-        
-        self.repel_threshold = base_repel * scale
-        self.target_stop_distance = base_stop * scale
-        self.max_force = 3.0
-        self.smoothing_factor = 0.2
-        
-        # Vehicle parameters (in cm)
-        self.vehicle_width = 25.0
-        self.vehicle_length = 55.0
-        self.min_turning_radius = 60.0
+        # Height thresholds
+        self.base_height = 100  # Base ground height
+        self.max_safe_height = 10  # Maximum traversable height difference in cm
 
-class PotentialFieldNavigation:
+class PathNavigator:
     def __init__(self):
         self.config = NavigationConfig()
         self.redis_client = redis.Redis(host='localhost', port=6379, db=0)
-        
-        # Initialize force vectors
-        self.attract_force = np.zeros(2)
-        self.repel_force = np.zeros(2)
-        self.total_force = np.zeros(2)
-        
-        # Add steering history for additional smoothing
         self.prev_angle = 0.0
         
         # Car position (fixed, matching sensing_advanced.py)
@@ -55,9 +39,6 @@ class PotentialFieldNavigation:
             self.config.map_width // 2,
             self.config.map_height - (250 // self.config.cm_per_pixel)
         ])
-        
-        # Set initial gear
-        self.redis_client.set('gear', 1)
 
     def _get_target_coords(self) -> Optional[np.ndarray]:
         """Get target coordinates from Redis"""
@@ -74,7 +55,7 @@ class PotentialFieldNavigation:
         """Decode combined height and confidence map from Redis"""
         if encoded_map is None:
             return (
-                np.full((self.config.map_height, self.config.map_width), self.config.map_base_height),
+                np.full((self.config.map_height, self.config.map_width), self.config.base_height),
                 np.zeros((self.config.map_height, self.config.map_width))
             )
             
@@ -86,187 +67,163 @@ class PotentialFieldNavigation:
         
         return height, confidence
 
-    def calculate_attractive_force(self, target_pos: np.ndarray) -> np.ndarray:
-        """Calculate attractive force toward target"""
-        direction = target_pos - self.car_pos
-        distance = np.linalg.norm(direction)
-        
-        # No attraction when we're at the target stop distance
-        if distance < self.config.target_stop_distance:
-            return np.zeros(2)
-            
-        # Scale attraction smoothly as we approach target
-        distance_factor = min(1.0, (distance - self.config.target_stop_distance) / 50.0)
-        force = direction / distance * self.config.attract_gain * distance_factor
-        
-        force_magnitude = np.linalg.norm(force)
-        if force_magnitude > self.config.max_force:
-            force = force * self.config.max_force / force_magnitude
-            
-        return force
-
-    def calculate_repulsive_force(self, height_map: np.ndarray, confidence_map: np.ndarray) -> np.ndarray:
-        """Calculate purely lateral repulsive forces to push car sideways away from obstacles"""
-        # Create observation window in front of car
-        window_width = int(100 / self.config.cm_per_pixel)  # 100cm wide
-        window_height = int(150 / self.config.cm_per_pixel) # 150cm deep
-        
-        x_start = max(0, int(self.car_pos[0] - window_width // 2))
-        x_end = min(self.config.map_width, int(self.car_pos[0] + window_width // 2))
-        y_start = max(0, int(self.car_pos[1] - window_height))
-        y_end = int(self.car_pos[1])
-        
-        # Get window data
-        height_window = height_map[y_start:y_end, x_start:x_end]
-        conf_window = confidence_map[y_start:y_end, x_start:x_end]
-        
-        # Find obstacles
-        height_diff = height_window - self.config.map_base_height
-        obstacle_mask = (height_diff > 10) & (conf_window > 0.3)
-        
-        if not np.any(obstacle_mask):
-            return np.zeros(2)
-            
-        # Get coordinates of all obstacle points
-        y_coords, x_coords = np.nonzero(obstacle_mask)
-        
-        lateral_force = 0.0  # Will be positive for rightward push, negative for leftward
-        
-        # Window center x-coordinate (relative to window)
-        center_x = window_width // 2
-        
-        # Calculate lateral push from each obstacle
-        for x, y in zip(x_coords, y_coords):
-            # Calculate how far the obstacle is to left or right of center
-            # Negative means obstacle is to the left, positive means to the right
-            x_offset = x - center_x
-            
-            # Distance from car (using y coordinate since this is in window space)
-            distance = obstacle_mask.shape[0] - y  # Convert y to distance (higher y = closer)
-            
-            if distance < self.config.repel_threshold / self.config.cm_per_pixel:
-                # Push away from the obstacle
-                # If obstacle is on left (negative x_offset), push right (positive force)
-                # If obstacle is on right (positive x_offset), push left (negative force)
-                push_strength = self.config.repel_gain * (1.0 - distance / (self.config.repel_threshold / self.config.cm_per_pixel))
-                lateral_force -= np.sign(x_offset) * push_strength  # Note the negative sign
-        
-        # Create repulsion vector with only lateral (x) component
-        total_repulsion = np.array([lateral_force, 0.0])
-        
-        # Limit maximum repulsion
-        force_magnitude = np.linalg.norm(total_repulsion)
-        if force_magnitude > self.config.max_force:
-            total_repulsion = total_repulsion * self.config.max_force / force_magnitude
-            
-        return total_repulsion
-
-    def create_force_visualization(self, target_pos: Optional[np.ndarray]) -> np.ndarray:
-        """Create visualization overlay showing forces"""
+    def _publish_navigation_overlay(self, paths: List[Tuple[np.ndarray, np.ndarray, float]], best_path_idx: int):
+        """Publish navigation visualization overlay to Redis"""
+        # Create RGBA overlay
         overlay = np.zeros((self.config.map_height, self.config.map_width, 4), dtype=np.uint8)
         
-        # Scale force vectors - make them shorter and thinner
-        scale_factor = 20  # Reduce from 100 to make vectors shorter
-        arrow_thickness = 1  # Reduce from default thickness
-        
-        # Draw attractive force in green (points toward target)
-        if target_pos is not None:
-            cv2.arrowedLine(
-                overlay,
-                tuple(map(int, self.car_pos)),
-                tuple(map(int, self.car_pos + self.attract_force * scale_factor)),
-                (0, 255, 0, 255), arrow_thickness
-            )
-        
-        # Draw repulsive force in red
-        cv2.arrowedLine(
-            overlay,
-            tuple(map(int, self.car_pos)),
-            tuple(map(int, self.car_pos + self.repel_force * scale_factor)),
-            (0, 0, 255, 255), arrow_thickness
-        )
-        
-        # Draw total force in blue
-        cv2.arrowedLine(
-            overlay,
-            tuple(map(int, self.car_pos)),
-            tuple(map(int, self.car_pos + self.total_force * scale_factor)),
-            (255, 0, 0, 255), arrow_thickness
-        )
-        
-        return overlay
+        # Draw all scanned paths
+        for i, (x_points, y_points, score) in enumerate(paths):
+            if len(x_points) == 0:
+                continue
+            
+            # Normalize score to 0-1 range for color intensity
+            score_normalized = max(0.3, min(1.0, (score + 2) / 4))  # Adjust range as needed
+            
+            if i == best_path_idx:
+                # Best path in green
+                color = (0, 255, 0, int(255 * score_normalized))
+                thickness = 2
+            else:
+                # Other paths in blue/red based on score
+                if score > 0:
+                    color = (50, 50, 200, int(180 * score_normalized))  # Blue for good paths
+                else:
+                    color = (200, 50, 50, int(180 * score_normalized))  # Red for bad paths
+                thickness = 1
 
-    def calculate_steering_output(self) -> Tuple[float, float]:
-        """Convert force vector to angle and target_speed commands"""
-        force_magnitude = np.linalg.norm(self.total_force)
+            # Draw path
+            for j in range(len(x_points) - 1):
+                cv2.line(overlay,
+                        (int(x_points[j]), int(y_points[j])),
+                        (int(x_points[j + 1]), int(y_points[j + 1])),
+                        color,
+                        thickness)
+
+        # Send to Redis
+        h, w = overlay.shape[:2]
+        shape = struct.pack('>II', h, w)
+        encoded = shape + overlay.tobytes()
+        self.redis_client.psetex('overlay_navigation', 1000, encoded)
+
+        # Also publish navigation parameters for visualization
+        self.redis_client.psetex('nav_look_ahead', 1000, self.config.look_ahead_distance)
+        self.redis_client.psetex('nav_scan_width', 1000, self.config.scan_width)
+
+    def find_best_path(self, height_map: np.ndarray, confidence_map: np.ndarray, target_pos: Optional[np.ndarray]) -> float:
+        """Find the best steering angle by scanning different angles ahead"""
+        # Convert distances from cm to pixels
+        look_ahead = int(self.config.look_ahead_distance / self.config.cm_per_pixel)
+        scan_width = int(self.config.scan_width / self.config.cm_per_pixel)
         
-        # Get current target distance if available
-        target_pos = self._get_target_coords()
+        # Generate angles to check
+        angles = np.linspace(-self.config.angle_range/2, self.config.angle_range/2, self.config.num_scan_angles)
+        best_score = float('-inf')
+        best_angle = 0
+        
+        # If we have a target, calculate desired direction
+        target_angle = 0
         if target_pos is not None:
-            distance_to_target = np.linalg.norm(target_pos - self.car_pos)
-            if distance_to_target < self.config.target_stop_distance:
-                return 0.0, 0.0  # Stop when we're close enough to target
+            direction = target_pos - self.car_pos
+            target_angle = np.degrees(np.arctan2(direction[0], -direction[1]))
         
-        # If no meaningful force or no target, don't move
-        if force_magnitude < 1e-6:
-            return 0.0, 0.0
-            
-        # Calculate steering angle
-        force_angle = np.arctan2(self.total_force[0], -self.total_force[1])
-        angle = np.clip(np.degrees(force_angle), -55.0, 55.0)
+        # Store all paths for visualization
+        paths = []
         
-        # Constant speed of 15
-        target_speed = 15.0
+        # Check each potential path
+        for angle in angles:
+            # Calculate path points
+            rad_angle = np.radians(angle)
+            end_x = int(self.car_pos[0] + look_ahead * np.sin(rad_angle))
+            end_y = int(self.car_pos[1] - look_ahead * np.cos(rad_angle))
             
-        return angle, target_speed
+            # Get points along the path
+            num_points = 20
+            x_points = np.linspace(self.car_pos[0], end_x, num_points).astype(int)
+            y_points = np.linspace(self.car_pos[1], end_y, num_points).astype(int)
+            
+            # Clip to map boundaries
+            mask = (x_points >= 0) & (x_points < self.config.map_width) & \
+                   (y_points >= 0) & (y_points < self.config.map_height)
+            x_points = x_points[mask]
+            y_points = y_points[mask]
+            
+            if len(x_points) == 0:
+                continue
+            
+            # Calculate path score based on:
+            # 1. Height differences (lower is better)
+            # 2. Confidence (higher is better)
+            # 3. Angle to target (closer to target angle is better)
+            height_diffs = np.abs(height_map[y_points, x_points] - self.config.base_height)
+            conf_values = confidence_map[y_points, x_points]
+            
+            # Penalize height differences above max_safe_height
+            height_penalty = np.sum(height_diffs > self.config.max_safe_height)
+            
+            # Calculate average confidence along path
+            conf_score = np.mean(conf_values)
+            
+            # Calculate angle score (if we have a target)
+            angle_score = 0
+            if target_pos is not None:
+                angle_diff = abs(angle - target_angle)
+                if angle_diff > 180:
+                    angle_diff = 360 - angle_diff
+                angle_score = 1.0 - (angle_diff / 180.0)
+            
+            # Combine scores (adjust weights as needed)
+            score = -height_penalty + conf_score + angle_score
+            
+            # Store path data for visualization
+            paths.append((x_points, y_points, score))
+            
+            if score > best_score:
+                best_score = score
+                best_angle = angle
+                best_path_idx = len(paths) - 1
+        
+        # Publish visualization data
+        self._publish_navigation_overlay(paths, best_path_idx)
+        
+        # Smooth the steering angle
+        best_angle = (1 - self.config.smoothing_factor) * self.prev_angle + \
+                    self.config.smoothing_factor * best_angle
+        self.prev_angle = best_angle
+        
+        return best_angle
 
     def process_navigation_cycle(self):
         """Process one complete navigation cycle"""
         try:
-            # Record that navigation is running
-            self.redis_client.psetex('log_navigation_running', 1000, 'on')
-            
             # Get target position
             target_pos = self._get_target_coords()
+            
+            # If no target, stop the car
             if target_pos is None:
-                print("No target visible")
-                self.redis_client.set('angle', 0)
-                self.redis_client.set('target_speed', 0)
+                self.redis_client.psetex('angle', 300, 0)
+                self.redis_client.psetex('target_speed', 300, 0)
                 return
-                
+            
             # Get and decode map data
             encoded_map = self.redis_client.get('raw_map')
             height_map, confidence_map = self._decode_height_map(encoded_map)
             
-            # Calculate forces
-            self.attract_force = self.calculate_attractive_force(target_pos)
-            self.repel_force = self.calculate_repulsive_force(height_map, confidence_map)
+            # Calculate distance to target
+            distance = np.linalg.norm(target_pos - self.car_pos)
             
-            # Combine forces with smoothing
-            new_total = self.attract_force + self.repel_force
-            prev_magnitude = np.linalg.norm(self.total_force)
-            self.total_force = (
-                self.total_force * (1 - self.config.smoothing_factor) +
-                new_total * self.config.smoothing_factor
-            )
+            # Stop if within 1 meter (100cm)
+            if distance < 100 / self.config.cm_per_pixel:
+                self.redis_client.psetex('angle', 300, 0)
+                self.redis_client.psetex('target_speed', 300, 0)
+                return
             
-            # Print force vectors for debugging
-            print(f"Forces - Attract: [{self.attract_force[0]:.2f}, {self.attract_force[1]:.2f}], " 
-                  f"Repel: [{self.repel_force[0]:.2f}, {self.repel_force[1]:.2f}], "
-                  f"Total: [{self.total_force[0]:.2f}, {self.total_force[1]:.2f}]")
+            # Find best steering angle
+            angle = self.find_best_path(height_map, confidence_map, target_pos)
             
-            # Calculate steering output
-            angle, target_speed = self.calculate_steering_output()
-            
-            # Send commands to Redis with 300ms timeout
+            # Send commands to Redis
             self.redis_client.psetex('angle', 300, angle)
-            self.redis_client.psetex('target_speed', 300, target_speed)
-            
-            # Create and send visualization
-            force_overlay = self.create_force_visualization(target_pos)
-            h, w = force_overlay.shape[:2]
-            encoded_overlay = struct.pack('>II', h, w) + force_overlay.tobytes()
-            self.redis_client.psetex('overlay_forces', 300, encoded_overlay)
+            self.redis_client.psetex('target_speed', 300, self.config.target_speed)
             
         except Exception as e:
             print(f"Error in navigation cycle: {e}")
@@ -284,5 +241,5 @@ class PotentialFieldNavigation:
                 time.sleep(1)
 
 if __name__ == "__main__":
-    navigator = PotentialFieldNavigation()
+    navigator = PathNavigator()
     navigator.run()

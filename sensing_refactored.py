@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation as R
 import curved_paths_coords as pc
 from config import MapConfig
 
-DEBUG_MODE = False  # Set to True to see confidence and occupancy maps
+DEBUG_MODE = True  # Set to True to see confidence and occupancy maps
 
 # world coordinate system
 # up +Y
@@ -83,7 +83,7 @@ class RedisManager:
         h, w = array.shape[:2]
         shape = struct.pack('>II', h, w)
         encoded = shape + array.tobytes()
-        self.r.set(name, encoded)
+        self.r.psetex(name, 1000, encoded)
 
 class RealSenseManager:
     def __init__(self):
@@ -160,12 +160,53 @@ class RealSenseManager:
         self.camera_height = 0.23  # mounting height of the depth camera vs. ground
 
     def update_realsense_data(self):
-        self.get_frames()
-        self.get_pose()
-        self.get_image_D435()
-        self.get_bw_image_T265()
-        self.get_depth_frame_D435()
-        self.get_rotation()
+        # Cache frequently accessed attributes
+        pipeline_D435 = self.pipelineD435
+        pipeline_T265 = self.pipelineT265
+
+        # Get both framesets simultaneously using threading
+        def get_d435_frames():
+            return pipeline_D435.wait_for_frames()
+        
+        def get_t265_frames():
+            return pipeline_T265.wait_for_frames()
+        
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            d435_future = executor.submit(get_d435_frames)
+            t265_future = executor.submit(get_t265_frames)
+            
+            frames = d435_future.result()
+            frames_T265 = t265_future.result()
+
+        # Get pose frame
+        self.pose = frames_T265.get_pose_frame()
+
+        # Get frames using aligned_depth_frame if available
+        if hasattr(self, 'align'):
+            aligned_frames = self.align.process(frames)
+            color_frame = aligned_frames.get_color_frame()
+            self.depth_frame = aligned_frames.get_depth_frame()
+        else:
+            color_frame = frames.get_color_frame()
+            self.depth_frame = frames.get_depth_frame()
+
+        self.bw_frame_T265 = frames_T265.get_fisheye_frame(1)
+
+        # Pre-allocate numpy arrays if possible
+        if not hasattr(self, '_color_array'):
+            self._color_array = np.empty((self.realsense_color_H, self.realsense_color_W, 3), dtype=np.uint8)
+            self._depth_array = np.empty((self.realsense_depth_H, self.realsense_depth_W), dtype=np.uint16)
+            self._bw_array = np.empty((800, 848), dtype=np.uint8)  # Adjust dimensions as needed
+
+        # Use pre-allocated arrays
+        np.copyto(self._color_array, np.asanyarray(color_frame.get_data()))
+        np.copyto(self._depth_array, np.asanyarray(self.depth_frame.get_data()))
+        np.copyto(self._bw_array, np.asanyarray(self.bw_frame_T265.get_data()))
+
+        self.color_image_D435 = self._color_array
+        self.depth_image_D435 = self._depth_array
+        self.bw_image_T265 = self._bw_array
 
     def get_frames(self):
         self.framesT265 = self.pipelineT265.wait_for_frames(1000)
@@ -382,86 +423,47 @@ class RealSenseManager:
         
         return depthx, depthy 
     
-class AprilTagDetector:
+class AprilTagProcessor:
     def __init__(self, realsensemanager, redismanager):
-        # Configure detector with lower detection threshold
-        detector_config = apriltag.DetectorOptions(
-            families='tag36h11',     # Standard tag family
-            border=1,                # Border size (in pixels)
-            nthreads=4,             # Use multiple threads for detection
-            quad_decimate=1.0,      # Don't decimate (reduce) image resolution
-            quad_blur=0.0,          # No blurring
-            refine_edges=True,      # Spend more time trying to find edges
-            refine_decode=True,     # Spend more time trying to decode tags
-            refine_pose=True,       # Refine pose estimates
-            debug=False,            # Disable debug output
-            quad_contours=True      # Use quad contours
-        )
-        self.detector = apriltag.Detector(detector_config)
-        
         self.rsm = realsensemanager
         self.rdm = redismanager
-
         self.target_world_coords = None
-        self.target_car_coords = None
-
-    def detect_tags(self):
-        detected = False
         
-        # Try D435 first
-        tags = self.detector.detect(self.rsm.gray_image_D435)
-        for tag in tags:
-            try:
-                x, y = tag.center
+    def process_detections(self):
+        source = self.rdm.r.get('apriltag_source')
+        
+        if source is None:
+            self.target_world_coords = None
+            # Clear target in Redis when no tag is detected
+            self.rdm.r.delete('target_car_coords')
+            return
+            
+        source = source.decode('utf-8')
+        tag_data = None
+        
+        if source == 'D435':
+            tag_data = self.rdm.r.get('apriltag_d435')
+            if tag_data:
+                x, y = struct.unpack('2f', tag_data)
                 x, y = self.rsm.color_pixel_to_depth_pixel(x, y, "D435")
                 if 0 <= x < self.rsm.realsense_depth_W and 0 <= y < self.rsm.realsense_depth_H:
-                    self.rdm.set_data('log_detect_cam', "D435", 3000)
-                    detected = True
-                    
-                    # Get 3D coordinates using D435's depth
                     cx, cy, cz = self.rsm.pixel_to_car_coord(int(x), int(y))
                     cwx, cwy, cwz = self.rsm.car_coord_to_world_coord(cx, cy, cz)
                     self.target_world_coords = [cwx, cwy, cwz]
+                    # Send car coordinates to Redis for visualization with timeout
+                    self.rdm.r.psetex('target_car_coords', 1000, struct.pack('3f', cx, cy, cz))
                     
-                    # Convert back to car coordinates for navigation
-                    target_car_x, target_car_y, target_car_z = self.rsm.world_coord_to_car_coord(cwx, cwy, cwz)
-                    target_coords_bytes = struct.pack('%sf' % 3, target_car_x, target_car_y, target_car_z)
-                    self.rdm.set_data('target_car_coords', target_coords_bytes, 3000)
-
-                    break
-                    
-            except Exception as e:
-                print(f"Error processing D435 tag: {e}")
-                continue
-        
-        # If no detection on D435, try T265
-        if not detected:
-            tags = self.detector.detect(self.rsm.bw_image_T265)
-            for tag in tags:
-                try:
-                    x, y = tag.center
-                    point_3d = self.rsm._t265_pixel_to_3d(x, y)
-                    
-                    if point_3d is not None:
-                        cx, cy, cz = point_3d
-                        cwx, cwy, cwz = self.rsm.car_coord_to_world_coord(cx, cy, cz)
-                        self.target_world_coords = [cwx, cwy, cwz]
-                        
-                        target_car_x, target_car_y, target_car_z = self.rsm.world_coord_to_car_coord(cwx, cwy, cwz)
-                        target_coords_bytes = struct.pack('%sf' % 3, target_car_x, target_car_y, target_car_z)
-                        self.rdm.set_data('target_car_coords', target_coords_bytes, 3000)
-                        self.rdm.set_data('log_detect_cam', "T265", 3000)
-                        detected = True
-
-                        break
-                        
-                except Exception as e:
-                    print(f"Error processing T265 tag: {e}")
-                    continue
-        
-        # Clear target if no detection
-        if not detected:
-            self.target_world_coords = None
+        elif source == 'T265':
+            tag_data = self.rdm.r.get('apriltag_t265')
+            if tag_data:
+                x, y = struct.unpack('2f', tag_data)
+                point_3d = self.rsm._t265_pixel_to_3d(x, y)
+                if point_3d is not None:
+                    cx, cy, cz = point_3d
+                    cwx, cwy, cwz = self.rsm.car_coord_to_world_coord(cx, cy, cz)
+                    self.target_world_coords = [cwx, cwy, cwz]
+                    # Send car coordinates to Redis for visualization with timeout
+                    self.rdm.r.psetex('target_car_coords', 1000, struct.pack('3f', cx, cy, cz))
 
 class MapManager:
     def __init__(self, width, height, base_height, realsensemanager, redismanager):
@@ -553,7 +555,7 @@ class MapManager:
         self.last_update_times[map_y, map_x] = current_time
 
     def update_map_and_obstacles_vectorized(self, depth_frame, max_climb_height, rotation, color_image_D435):
-        """Optimized map update with reduced resolution"""
+        """Optimized map update with ray casting for shadows"""
         h_start = int(self.realsensemanager.realsense_depth_H / 4)
         depth_data = np.asanyarray(depth_frame.get_data())[h_start:, :]
         
@@ -571,11 +573,12 @@ class MapManager:
         points_rotated = np.einsum('ij,klj->kli', rotation, points)
         points_rotated[:, :, 1] = self.realsensemanager.camera_height - points_rotated[:, :, 1]
         
-        # Scale coordinates for new resolution
+        # Convert 3D points to map coordinates
         map_x = (points_rotated[:, :, 0] * 100/self.cm_per_pixel + (self.mapW / 2) - 3).astype(np.int32)
         map_y = (self.mapH - points_rotated[:, :, 2] * 100/self.cm_per_pixel - self.car_position_on_map).astype(np.int32)
         height_values = 100 + points_rotated[:, :, 1] * 100
         
+        # Create valid points mask
         valid_mask = (
             (points_rotated[:, :, 1] <= self.ignore_above_height) &
             (map_x >= 0) & (map_x < self.mapW) &
@@ -583,12 +586,127 @@ class MapManager:
             (Z > 0)
         )
         
+        # First pass: Update map with valid measurements
         valid_x = map_x[valid_mask]
         valid_y = map_y[valid_mask]
         valid_heights = height_values[valid_mask]
         valid_confidences = np.maximum(0.1, 1.0 - (Z[valid_mask] / 5.0))
         
         self.bayesian_update_vectorized(valid_x, valid_y, valid_heights, valid_confidences)
+        
+        # Second pass: Ray casting for shadows
+        car_x = self.mapW // 2
+        car_y = self.mapH - self.car_position_on_map
+        
+        # Ray casting parameters
+        num_rays = 25  # Number of rays to cast
+        ray_length = 500  # 6 meters in centimeters
+        points_per_ray = 60  # Sample points along ray
+        fov = np.radians(90)  # Camera's FOV in radians
+        blind_spot_dist = 20  # 20cm blind spot in front of car
+        
+        # Set base height for blind spot zone (20cm radius around car)
+        Y, X = np.ogrid[:self.mapH, :self.mapW]
+        dist_from_car = np.sqrt((X - car_x)**2 + (Y - car_y)**2) * self.cm_per_pixel
+        blind_spot_mask = dist_from_car < blind_spot_dist
+        
+        # Update blind spot with base height and medium confidence
+        blind_x, blind_y = np.where(blind_spot_mask)
+        if len(blind_x) > 0:
+            blind_heights = np.full_like(blind_x, self.map_base_height, dtype=np.float32)
+            blind_confidences = np.full_like(blind_x, 0.5, dtype=np.float32)  # Medium confidence
+            self.bayesian_update_vectorized(blind_x, blind_y, blind_heights, blind_confidences)
+        
+        # Generate evenly spaced angles
+        angles = np.linspace(-fov/2, fov/2, num_rays)
+        angle_spacing = fov / (num_rays - 1)  # angle between adjacent rays
+        
+        # Generate sample points along each ray
+        distances = np.linspace(blind_spot_dist, ray_length, points_per_ray)
+        
+        for angle in angles:
+            # Ray direction vector
+            dx = np.sin(angle)
+            dy = -np.cos(angle)
+            
+            # Calculate ray points
+            ray_x = (car_x + dx * distances / self.cm_per_pixel).astype(np.int32)
+            ray_y = (car_y + dy * distances / self.cm_per_pixel).astype(np.int32)
+            
+            # Filter valid points
+            valid_points = (
+                (ray_x >= 0) & (ray_x < self.mapW) & 
+                (ray_y >= 0) & (ray_y < self.mapH)
+            )
+            
+            ray_x = ray_x[valid_points]
+            ray_y = ray_y[valid_points]
+            valid_distances = distances[valid_points]
+            
+            if len(ray_x) == 0:
+                continue
+            
+            # Process points along the ray
+            current_height = None
+            current_confidence = None
+            
+            # Get heights for all points along ray at once
+            ray_heights = self.map[ray_y, ray_x, 0]
+            ray_confidences = self.map[ray_y, ray_x, 2]
+            
+            # Process each point along the ray
+            for i in range(len(ray_x)):
+                height = ray_heights[i]
+                confidence = ray_confidences[i]
+                point_dist = valid_distances[i]
+                
+                # Calculate required shadow width based on distance and angle spacing
+                # At each distance, calculate how wide shadow needs to be to reach adjacent rays
+                arc_width = 2 * point_dist * np.tan(angle_spacing / 2) / self.cm_per_pixel
+                shadow_width = max(1, int(arc_width / 2))
+                
+                # If this point has high confidence, it's a real measurement
+                if confidence > 0.5:
+                    height_diff = height - self.map_base_height
+                    
+                    # If it's significantly above base height, it's an obstacle
+                    if height_diff > 10:
+                        current_height = height
+                        current_confidence = confidence
+                    # If it's at ground level, stop shadow
+                    elif current_height is not None and height_diff < 5:
+                        current_height = None
+                        current_confidence = None
+                
+                # If we're in a shadow, fill this point and its neighbors
+                elif current_height is not None:
+                    shadow_points_x = []
+                    shadow_points_y = []
+                    
+                    # Create a square of points around the ray point using calculated width
+                    for dx in range(-shadow_width, shadow_width + 1):
+                        for dy in range(-shadow_width, shadow_width + 1):
+                            fill_x = ray_x[i] + dx
+                            fill_y = ray_y[i] + dy
+                            
+                            if (0 <= fill_x < self.mapW and 0 <= fill_y < self.mapH):
+                                shadow_points_x.append(fill_x)
+                                shadow_points_y.append(fill_y)
+                    
+                    if shadow_points_x:  # If we have valid points to fill
+                        num_points = len(shadow_points_x)
+                        shadow_heights = np.full(num_points, current_height, dtype=np.float32)
+                        # Reduce confidence with distance
+                        distance_factor = max(0.3, 1.0 - (point_dist / ray_length))
+                        shadow_confidences = np.full(num_points, current_confidence * distance_factor, dtype=np.float32)
+                        
+                        # Update shadow points
+                        self.bayesian_update_vectorized(
+                            np.array(shadow_points_x),
+                            np.array(shadow_points_y),
+                            shadow_heights,
+                            shadow_confidences
+                        )
 
     def update_variables(self):
         self.target_memory_time = int(self.redismanager.get_float('target_memory_time', 1000))
@@ -683,7 +801,7 @@ class MapManager:
 
 rsm = RealSenseManager()
 rdm = RedisManager()
-atd = AprilTagDetector(rsm, rdm)
+atd = AprilTagProcessor(rsm, rdm)
 mapc = MapManager(
     width=800,   # Keep physical width the same
     height=800,  # Keep physical height the same
@@ -716,7 +834,7 @@ while True:
     timer.end('map_update')
 
     timer.start('apriltag')
-    atd.detect_tags()
+    atd.process_detections()
     timer.end('apriltag')
 
     timer.start('map_maintenance')
@@ -745,8 +863,8 @@ while True:
     rdm.set_data('log_sensing_running', 'on', 1000)
     rdm.set_data('current_speed', rsm.speed)
     rdm.map_image_to_redis('D435_image', rsm.color_image_D435)
-    #rdm.map_image_to_redis('D435_depth_image', rsm.depth_image_D435)
-    #rdm.map_image_to_redis('T265_image', rsm.bw_image_T265)
+    rdm.map_image_to_redis('D435_depth_image', rsm.depth_image_D435)
+    rdm.map_image_to_redis('T265_image', rsm.bw_image_T265)
     timer.end('redis_updates')
 
     # Log timing
